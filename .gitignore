@@ -19,6 +19,7 @@ deck_work/
 
 # Small fixed projection assets required by publication notebook 07
 !assets/*.rds
+!tradeseq_fit/gene_lists/*.rds
 
 # R session state
 .Rhistory

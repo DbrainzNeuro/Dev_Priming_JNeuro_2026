@@ -1,0 +1,5 @@
+# Preserve the executed tradeSeq R script byte-for-byte.
+tradeseq_fit/005_run_tradeseq_biowulf.R -text
+
+# Keep the public Slurm launcher in Unix line-ending form.
+tradeseq_fit/*.slurm text eol=lf

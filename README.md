@@ -31,8 +31,10 @@ Zenodo contains checkpoints that let each major analysis begin from its tested i
 | Reproduce the p5-versus-p22 CellChat analysis | `09_cellchat_gbc_incoming_p5_p22.Rmd` | `cellchat_input.RData` |
 
 Notebook 08 plots the deposited tradeSeq fit; it does **not** rerun the
-computationally expensive `fitGAM()` step. Notebook 09 is an independent
-CellChat analysis and does not require notebooks 03--08.
+computationally expensive `fitGAM()` step. The literal HPC fitting code and its
+path-sanitized Slurm launcher are preserved separately in
+[`tradeseq_fit`](tradeseq_fit). Notebook 09 is an independent CellChat analysis
+and does not require notebooks 03--08.
 
 ## Zenodo files
 
@@ -196,6 +198,7 @@ Helper functions are located in
 | `01_*.Rmd` through `09_*.Rmd` | Numbered public analysis notebooks |
 | `publication_helpers.R` | Shared project-defined helper functions |
 | `assets/` | Fixed coordinates, camera state, and curve embedding for notebook 07 |
+| `tradeseq_fit/` | Literal tradeSeq fitting script, sanitized Slurm launcher, and exact gene-list inputs |
 | `DATA_MANIFEST.csv` | Deposited file sizes, notebook usage, rerun tier, and Zenodo DOI field |
 | `DESCRIPTION` | Direct R package dependencies |
 | `renv.lock` | Pinned R package environment |
