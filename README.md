@@ -80,6 +80,7 @@ Dev_Priming_JNeuro_2026/
 |-- 08_plot_precomputed_tradeseq.Rmd
 |-- 09_cellchat_gbc_incoming_p5_p22.Rmd
 |-- publication_helpers.R
+|-- tradeseq_fit/
 |-- DESCRIPTION
 |-- renv.lock
 `-- README.md
@@ -177,6 +178,49 @@ repository root as the project root so `here::here()` resolves paths correctly.
 | `07_run_slingshot_and_plot.Rmd` | Runs Slingshot and recreates the fixed rotated trajectory view | `slingshot_output.rds` and trajectory plot |
 | `08_plot_precomputed_tradeseq.Rmd` | Recreates the TF heatmap and plots the deposited tradeSeq fit | Figure 4 plots and marker table |
 | `09_cellchat_gbc_incoming_p5_p22.Rmd` | Compares incoming GBC signaling at p5 and p22 | CellChat tables and figures |
+
+## Reproducing the historical tradeSeq fit
+
+Notebook 08 uses the completed `tradeseq_fit_combined.rds` deposited on
+Zenodo. Users do not need to repeat the fit to reproduce the plotted results.
+For provenance and optional full recomputation, [`tradeseq_fit`](tradeseq_fit)
+contains the code used to generate that object.
+
+- [`005_run_tradeseq_biowulf.R`](tradeseq_fit/005_run_tradeseq_biowulf.R)
+  is byte-for-byte identical to the executed R script. Its SHA-256 checksum is
+  `4C64E709A1E6CB7BD685BD9FA69951ED6BDC129A585D3E246CBCAEF957041A11`.
+- [`tradeseq_pc_1_to_5_fineClusters_k6_april13.slurm`](tradeseq_fit/tradeseq_pc_1_to_5_fineClusters_k6_april13.slurm)
+  is the execution launcher with only account-specific paths and directory
+  names replaced by repository-relative paths.
+- `tradeseq_fit/gene_lists/ALL_TF.rds` and
+  `tradeseq_fit/gene_lists/HVG_minus_TF.rds` are exact copies of the two gene
+  lists supplied to the executed job. They are disjoint and contain 4,343
+  genes in total.
+
+The recorded fitting parameters were:
+
+| Parameter | Value |
+|---|---:|
+| Input representation | Slingshot PCs 1--5 with fine cluster labels |
+| Genes per chunk | 250 |
+| Workers | 8 |
+| `nknots` | 6 |
+| Minimum expressing cells | 10 |
+| Random seed | 12345 |
+
+On a Slurm cluster, place `slingshot_output.rds` in `data/`, then run from the
+repository root:
+
+```bash
+mkdir -p logs
+sbatch tradeseq_fit/tradeseq_pc_1_to_5_fineClusters_k6_april13.slurm
+```
+
+The job writes the combined fit, individual chunk models, statistical-test
+results, manifests, and session information under `results/tradeseq_fit/`.
+The full fit is memory- and compute-intensive. Direct R execution instructions
+and additional provenance details are in
+[`tradeseq_fit/README.md`](tradeseq_fit/README.md).
 
 ## Included fixed plotting assets
 
