@@ -1,0 +1,392 @@
+---
+title: "Figure 4: Ascl1-positive TF heatmap and tradeSeq"
+author: "Dana Bakalar"
+date: "2026-10-15"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  output_dir: "results"
+  save_outputs: true
+---
+
+This analysis loads the Ascl1-positive GBC object,
+recalculates its resolution-0.7 marker genes, keeps the genes listed in
+`ALL_TF`, selects the top eight TF markers per cluster, and plots the marker
+heatmap. It then uses the existing PC1--5 tradeSeq fit to plot the same TF set
+along pseudotime.
+
+```{r setup, include=FALSE, cache=FALSE}
+# Load packages used for the GBC, Slingshot, and tradeSeq plots.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  ),
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 150
+)
+
+pipeline_root <- here::here()
+
+# Load the saved inputs; tradeSeq is not refitted here.
+ascl1_input_path <- file.path(params$download_dir, "gbc_subset.rds")
+all_tf_path <- file.path(params$download_dir, "ALL_TF.Rda")
+tradeseq_sce_path <- file.path(params$download_dir, "slingshot_output.rds")
+tradeseq_fit_path <- file.path(params$download_dir, "tradeseq_fit_combined.rds")
+figure_dir <- file.path(params$output_dir, "plots", "figure_4_ascl1_tf_tradeseq")
+
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(tradeSeq)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(ggplot2)
+})
+```
+
+## Load the Ascl1-positive cell object
+
+Load the Ascl1-positive object and set the identity
+classes to the same `RNA_snn_res.0.7` clusters used by the earlier scripts.
+
+```{r load-ascl1-object}
+# Load the GBC subset used for the Ascl1 transcription-factor heatmap.
+ascl1_cells <- readRDS(ascl1_input_path)
+DefaultAssay(ascl1_cells) <- "RNA"
+Idents(ascl1_cells) <- "RNA_snn_res.0.7"
+
+cluster_order <- c("1", "10", "0", "2", "4", "9", "11")
+cluster_order <- cluster_order[
+  cluster_order %in% as.character(unique(Idents(ascl1_cells)))
+]
+
+data.frame(
+  cells = ncol(ascl1_cells),
+  genes = nrow(ascl1_cells),
+  clusters = paste(cluster_order, collapse = ", ")
+)
+```
+
+## Calculate marker genes
+
+Calculate positive cluster markers with the Seurat settings
+used by the prior marker scripts: Wilcoxon testing, `min.pct = 0.1`, and
+`logfc.threshold = 0.25`.
+
+```{r calculate-marker-genes}
+# Find markers for the GBC grouping used to rank transcription factors.
+all_markers <- FindAllMarkers(
+  ascl1_cells,
+  only.pos = TRUE,
+  min.pct = 0.1,
+  logfc.threshold = 0.25,
+  test.use = "wilcox",
+  verbose = FALSE
+)
+
+all_markers$gene <- rownames(all_markers)
+all_markers <- all_markers %>%
+  mutate(
+    cluster_id = as.character(cluster),
+    pct.diff = pct.1 - pct.2
+  ) %>%
+  filter(cluster_id %in% cluster_order)
+
+all_markers
+```
+
+## Load `ALL_TF` and subset the marker table
+
+Load the `ALL_TF` reference and retain marker genes
+that are present in that transcription-factor list.
+
+```{r subset-tfs}
+# Restrict the marker table to the transcription-factor list.
+all_tf_environment <- new.env(parent = emptyenv())
+load(all_tf_path, envir = all_tf_environment)
+ALL_TF <- unique(as.character(get("ALL_TF", envir = all_tf_environment)))
+
+tf_markers <- all_markers %>%
+  filter(gene %in% ALL_TF)
+
+tf_markers
+```
+
+## Select the top eight TF markers per cluster
+
+Rank TF markers by adjusted p value, then by fold change and
+percent detected. It follows the earlier heatmap workflow by using average
+RNA expression to assign a duplicated gene to the cluster where it is most
+highly expressed.
+
+```{r select-top-8}
+# Select the eight highest-ranked transcription factors per GBC group.
+ranked_tf_markers <- tf_markers %>%
+  mutate(cluster_id = factor(cluster_id, levels = cluster_order)) %>%
+  arrange(
+    cluster_id,
+    p_val_adj,
+    desc(avg_log2FC),
+    desc(pct.1),
+    gene
+  ) %>%
+  group_by(cluster_id) %>%
+  slice_head(n = 8) %>%
+  ungroup() %>%
+  mutate(cluster_id = as.character(cluster_id))
+
+average_expression <- AverageExpression(
+  ascl1_cells,
+  features = unique(ranked_tf_markers$gene),
+  group.by = "RNA_snn_res.0.7",
+  assays = "RNA",
+  layer = "data",
+  verbose = FALSE
+)$RNA
+
+colnames(average_expression) <- sub("^RNA\\.g", "", colnames(average_expression))
+colnames(average_expression) <- sub("^RNA\\.", "", colnames(average_expression))
+colnames(average_expression) <- sub("^g", "", colnames(average_expression))
+
+average_expression_long <- as.data.frame(as.matrix(average_expression)) %>%
+  rownames_to_column("gene") %>%
+  pivot_longer(
+    cols = -gene,
+    names_to = "cluster_id",
+    values_to = "assign_avg"
+  )
+
+top8_tf <- ranked_tf_markers %>%
+  left_join(
+    average_expression_long,
+    by = c("gene", "cluster_id")
+  ) %>%
+  arrange(
+    desc(assign_avg),
+    p_val_adj,
+    desc(avg_log2FC),
+    desc(pct.1),
+    gene
+  ) %>%
+  group_by(gene) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  mutate(cluster_id = factor(cluster_id, levels = cluster_order)) %>%
+  arrange(cluster_id, p_val_adj, desc(avg_log2FC), desc(pct.1), gene) %>%
+  mutate(
+    global_row_order = row_number(),
+    gene_label = gene
+  )
+
+top8_tf
+```
+
+## Plot the Ascl1-positive TF heatmap
+
+Scale each gene across clusters and plot the selected top-eight
+TF markers in cluster order.
+
+```{r ascl1-tf-heatmap, cache=FALSE}
+# Build and print the heatmap with the published ordering, labels, and scales.
+heatmap_data <- average_expression_long %>%
+  filter(cluster_id %in% cluster_order) %>%
+  group_by(gene) %>%
+  mutate(
+    z_expr = ifelse(
+      is.na(sd(assign_avg)) || sd(assign_avg) == 0,
+      0,
+      (assign_avg - mean(assign_avg)) / sd(assign_avg)
+    )
+  ) %>%
+  ungroup() %>%
+  inner_join(
+    top8_tf %>% select(gene, gene_label, global_row_order),
+    by = "gene"
+  ) %>%
+  mutate(
+    cluster_id = factor(cluster_id, levels = cluster_order),
+    gene_label = factor(
+      gene_label,
+      levels = rev(top8_tf %>% arrange(global_row_order) %>% pull(gene_label))
+    )
+  )
+
+ascl1_tf_heatmap <- ggplot(
+  heatmap_data,
+  aes(x = cluster_id, y = gene_label, fill = z_expr)
+) +
+  geom_tile(color = NA, linewidth = 0) +
+  scale_fill_gradient2(
+    low = "#f1eef6",
+    mid = "#9e9ac8",
+    high = "#54278f",
+    midpoint = 0,
+    name = "Scaled\navg expr"
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 9) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold", size = 8.5),
+    axis.text.y = element_text(face = "italic", size = 7.2),
+    legend.title = element_text(size = 8),
+    legend.text = element_text(size = 7),
+    legend.key.height = grid::unit(0.32, "in"),
+    plot.margin = margin(5.5, 5.5, 5.5, 5.5)
+  )
+
+ggsave(
+  file.path(figure_dir, "ascl1_res07_top8_unique_tf_heatmap.png"),
+  ascl1_tf_heatmap,
+  width = 3.8,
+  height = 5.35,
+  units = "in",
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  file.path(figure_dir, "ascl1_res07_top8_unique_tf_heatmap.pdf"),
+  ascl1_tf_heatmap,
+  width = 3.8,
+  height = 5.35,
+  units = "in",
+  bg = "white"
+)
+
+write.csv(
+  top8_tf,
+  file.path(figure_dir, "ascl1_top8_tf_markers.csv"),
+  row.names = FALSE
+)
+
+ascl1_tf_heatmap
+```
+
+## Load the existing PC1--5 tradeSeq fit
+
+Load the fitted Slingshot SCE and combined tradeSeq GAM fit
+used for the PC1--5 trajectory. It does not refit tradeSeq.
+
+```{r load-tradeseq-fit}
+# Load the tradeSeq fit and Slingshot object.
+sce_tradeseq <- readRDS(tradeseq_sce_path)
+gam_fit <- readRDS(tradeseq_fit_path)
+
+tradeSeq_genes <- intersect(unique(top8_tf$gene), rownames(gam_fit))
+tradeSeq_genes <- intersect(tradeSeq_genes, rownames(sce_tradeseq))
+
+if (length(tradeSeq_genes) == 0) {
+  stop("None of the selected top-eight TF markers are present in the tradeSeq fit.")
+}
+
+tradeSeq_genes
+```
+
+## Predict tradeSeq expression along pseudotime
+
+Calculate the fitted expression curves for the selected TFs along
+each Slingshot lineage.
+
+```{r predict-tradeseq}
+# Predict expression for the selected genes along each lineage.
+tradeSeq_predictions <- tradeSeq::predictSmooth(
+  gam_fit,
+  gene = tradeSeq_genes,
+  nPoints = 200,
+  tidy = TRUE
+)
+
+lineage_labels <- c(
+  "1" = "OSN",
+  "2" = "Sus",
+  "3" = "HBC",
+  "4" = "MV"
+)
+
+tradeSeq_predictions <- tradeSeq_predictions %>%
+  mutate(
+    lineage_id = as.character(lineage),
+    lineage = factor(
+      unname(lineage_labels[lineage_id]),
+      levels = c("OSN", "Sus", "HBC", "MV")
+    )
+  )
+```
+
+## Plot the tradeSeq curves
+
+Plot fitted TF expression curves across pseudotime, with one
+facet per selected TF and one colored curve for each lineage.
+
+```{r tradeseq-plot, cache=FALSE}
+# Build and print the smoother plot with the published mappings, labels, and scales.
+lineage_colors <- c(
+  "OSN" = "#6A1B9A",
+  "Sus" = "#1F78B4",
+  "HBC" = "#009E73",
+  "MV" = "#D95F02"
+)
+
+tradeseq_tf_plot <- ggplot(
+  tradeSeq_predictions,
+  aes(x = time, y = yhat, color = lineage, group = lineage)
+) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~gene, scales = "free_y", ncol = 4) +
+  scale_color_manual(values = lineage_colors, drop = FALSE) +
+  labs(
+    x = "Pseudotime",
+    y = "tradeSeq fitted expression",
+    color = "Lineage"
+  ) +
+  theme_classic(base_size = 9) +
+  theme(
+    strip.text = element_text(face = "italic", size = 8),
+    legend.position = "bottom",
+    panel.spacing = grid::unit(0.7, "lines")
+  )
+
+ggsave(
+  file.path(figure_dir, "ascl1_top8_tf_tradeseq_smoothers.png"),
+  tradeseq_tf_plot,
+  width = 11,
+  height = 10,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+ggsave(
+  file.path(figure_dir, "ascl1_top8_tf_tradeseq_smoothers.pdf"),
+  tradeseq_tf_plot,
+  width = 11,
+  height = 10,
+  units = "in",
+  bg = "white"
+)
+
+tradeseq_tf_plot
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this precomputed tradeSeq plotting run.
+sessionInfo()
+```

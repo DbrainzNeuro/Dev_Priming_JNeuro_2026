@@ -1,0 +1,396 @@
+---
+title: "003_Subset_and_Cluster_gbcs"
+author: "Dana Bakalar"
+date: "2024-07-25"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  output_dir: "results"
+  save_outputs: true
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, cache=FALSE}
+# Load the packages and shared helpers used to subset, cluster, and plot GBCs.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  )
+)
+suppressPackageStartupMessages({
+library(Seurat)
+library(SeuratExtend)
+library(tidyverse)
+library(patchwork)
+library(grid)
+
+})
+
+# Load the analysis functions.
+publication_dir <- dirname(normalizePath(knitr::current_input(), winslash = "/", mustWork = TRUE))
+source(file.path(publication_dir, "publication_helpers.R"), local = TRUE)
+```
+
+
+```{r get_data}
+# Load the olfactory-lineage object if it is not already in memory.
+if (!exists("filtered_seurat_lineageb")) {
+  filtered_seurat_lineageb <- readRDS(file.path(params$download_dir, "olfactory_lineage.rds"))
+}
+```
+
+
+
+Get Ascl1+ cells 
+```{r select-gbcs}
+# Select the GBC clusters from the olfactory-lineage object.
+DefaultAssay(filtered_seurat_lineageb) <- "RNA"
+
+gbc_subset <- subset(
+  filtered_seurat_lineageb,
+  subset = Ascl1 > 0 
+)
+```
+
+Recalculate dimensional reductions and clusters after subsetting.
+```{r reprocess}
+# Reprocess the GBC subset across the specified clustering resolutions.
+res_cols <- grep("_snn_res\\.", colnames(gbc_subset@meta.data), value = TRUE)
+gbc_subset@meta.data[res_cols] <- NULL
+gbc_subsetb <- process_seurat_object(gbc_subset, resolution.range = c(0.5, 0.6, 0.7))
+```
+
+
+Make and plot module scores
+```{r plot-gbc-markers}
+# Plot established marker panels to interpret the GBC-specific clusters.
+marker_list <- list(
+  Basal_RE                = c("Krt17", "Reg3g"),
+  Bowmans                 = c("Sox9", "Wfdc18"),
+  Goblet_cells            = c("Tff2", "Muc5b"),
+  OB                      = c("Dcc", "Pou3f2", "Igfbpl1", "Dlx2"),
+  Olf_Ensheathing         = c("Npy", "S100b"),
+  Odontogenic_Epithelium  = c("Amelx", "Enam"),
+  Fibroblasts             = c("Col1a1", "Col1a2"),
+  Macrophages             = c("C1qb", "Cd68"),
+  Monocytes               = c("S100a8", "S100a9", "Il1b"),
+  Basal_OE                = c("Trp63", "Krt5"),
+  GBC                     = c("Ascl1", "Kit"),
+  INP                     = c("Neurod1", "Neurog1"),
+  iOSN                    = c("Ebf2", "Gap43"),
+  mOSN                    = c("Omp","Adcy3"),
+  Sus                     = c("Cyp2a5", "Il33"),
+  Tuft_Cells              = c("Ascl3", "Foxi1"))
+
+add_module_scores_and_plot(
+  seurat_obj = gbc_subsetb,
+  marker_list = marker_list,
+  cluster_resolution = "RNA_snn_res.0.7",
+  min_genes_required = 2, 
+  ctrl = 5,
+  feature_plot_color_low = "white",
+  feature_plot_color_high = "blue",
+  reduction.name = "umap")
+
+```
+
+
+Cell Cycle Analysis
+```{r cell_cycle_scores}
+# Score cell-cycle phase so proliferating GBC states can be compared.
+phase_analysis <- score_and_plot_cell_cycle(gbc_subsetb, cc_genes = cc.genes, reduction = "umap")
+
+phase_plot <- phase_analysis[["phase_plot"]] + 
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2")
+phase_plot
+
+
+d <- DimPlot(gbc_subsetb, reduction = 'umap', group.by = "RNA_snn_res.0.7", label = T)+ 
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2")
+
+plotz <- d | phase_plot 
+plotz
+```
+
+
+
+```{r summarize-cell-cycle}
+# Calculate cell-cycle percentages per cluster for the phase-composition plot.
+cc_phase_perc <- phase_analysis[["scored_seurat"]]@meta.data %>%
+  group_by(cluster = phase_analysis[["scored_seurat"]]@meta.data$RNA_snn_res.0.7, Phase) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  group_by(cluster) %>%
+  mutate(percent = 100 * n / sum(n)) %>%
+  arrange(cluster, Phase)
+
+ggplot(cc_phase_perc, aes(x = factor(cluster), y = percent, fill = Phase)) +
+  geom_bar(stat = "identity", position = "stack", color = "black", size = 0.2) +
+  labs(x = "Cluster", y = "Percentage", title = "Cell Cycle Phase Composition per Cluster") +
+  theme_minimal()
+```
+
+
+Plot by sample to see if well distributed
+```{r plot-gbcs-by-age}
+# Order ages explicitly and plot the GBC subset across developmental time.
+# Ensure the 'sample' factor is ordered correctly
+gbc_subsetb$sample <- factor(gbc_subsetb$sample, levels = c("p1", "p3", "p5", "p8", "p15", "p22"))
+
+seq_folder_colors <- c(
+  "p5_R1_counts" = "#a02b93",  
+  "p5_R2_counts" = "#23ffff",  
+
+  "p8_R1_counts" = "#a02b93",  
+  "p8_M_counts" = "#23ffff",  
+
+  "p1_F_counts" = "#a02b93",  
+  "p1_M_counts" = "#23ffff",  
+  "p1_F_2_counts" = "#f6c141",  
+  "p1_M_2_counts" = "#4169e1",  
+
+  "p3_F_counts" = "#a02b93",  
+  "p3_M_counts" = "#23ffff", 
+  "p3_F_2_counts" = "#f6c141",  
+  "p3_M_2_counts" = "#4169e1",  
+
+
+  "p15_R1_counts" = "#a02b93",  
+  "p15_F_counts" = "#23ffff", 
+
+  "p22_F_counts" = "#a02b93",  
+  "p22_M_counts" = "#23ffff",  
+  "p22_F_2_counts" = "#f6c141",  
+  "p22_M_2_counts" = "#4169e1"#,   
+
+)
+
+samples <- levels(gbc_subsetb$sample)
+
+plots <- lapply(samples, function(s) {
+  p <- DimPlot(gbc_subsetb[, gbc_subsetb$sample == s],
+               reduction = "umap",
+               group.by = "seq_folder",
+               shuffle = TRUE) +
+    scale_color_manual(values = seq_folder_colors) +
+    ggtitle(s) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      strip.text = element_blank(),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      panel.background = element_rect(fill = "transparent", color = NA),
+      plot.background = element_rect(fill = "transparent", color = NA)
+    )
+  return(p)
+})
+
+# Add axis labels only to first plot
+plots[[1]] <- plots[[1]] + 
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2") 
+# Combine with patchwork
+p <- wrap_plots(plots, ncol = 3)
+p <- p + 
+  theme(
+    panel.background = element_rect(fill = "transparent", color = NA),
+    plot.background = element_rect(fill = "transparent", color = NA)
+  )
+p
+```
+
+Remove neuronal lineage cells for downstream analysis
+```{r remove-neuronal-gbcs}
+# Remove neuronal-like clusters to create the non-neuronal GBC object.
+gbc_subset_noNeur <- subset(
+  gbc_subsetb ,
+  subset = (RNA_snn_res.0.6 %in%  c("0","1","2","5","9","10","11"))  
+)
+DimPlot(gbc_subset_noNeur, reduction = 'umap')
+```
+Identify positive markers at resolution 0.7 and export the full and filtered marker tables.
+```{r find-gbc-markers}
+# Find markers at the selected GBC resolution and optionally write their tables.
+cluster_resolution = 0.7
+Idents(object = gbc_subset_noNeur) <- paste0("RNA_snn_res.", cluster_resolution)
+
+marker_results <- find_markers(gbc_subset_noNeur, paste0("RNA_snn_res.", cluster_resolution))
+# Access the first data frame in the list
+df1 <- marker_results[[1]]
+# Save the first data frame to a CSV file
+write.csv(
+  df1,
+  file = file.path(params$output_dir, "markers", "allMarkers_Ascl1_pos.csv"),
+  row.names = FALSE
+)
+# Access the second data frame in the list
+df2 <- marker_results[[2]]
+# Save the second data frame to a CSV file
+write.csv(
+  df2,
+  file = file.path(params$output_dir, "markers", "topMarkers_Ascl1_pos.csv"),
+  row.names = FALSE
+)
+
+```
+
+Where are marker genes expressed?
+```{r label-gbc-clusters}
+# Assign the established biological labels and colors to the final GBC clusters.
+
+# Define marker-gene pairs.
+plotgenessss <- list(
+    CYP = c("Cyp2a5", "Sec14l3"),
+    HBC = c("Krt5", "Trp63"),
+    MV  = c("Pou2f3", "Ascl3"),
+    BG  = c("Sox9", "Wfdc18")
+)
+
+# Calculate shared UMAP crop limits while trimming only extreme outliers.
+umap_limits <- as.data.frame(
+    gbc_subset_noNeur@reductions$umap@cell.embeddings
+) %>%
+    summarise(
+        xmin = quantile(umap_1, 0.01),
+        xmax = quantile(umap_1, 0.99),
+        ymin = quantile(umap_2, 0.01),
+        ymax = quantile(umap_2, 0.99)
+    )
+
+# Plot each marker pair with the same crop, theme, and layout.
+
+# Create one two-gene panel for each marker group.
+all_plots <- lapply(plotgenessss, function(genes) {
+    create_gene_pair_plot(gbc_subset_noNeur, genes)
+})
+
+# Stack the marker-group panels vertically.
+final_plot <- cowplot::plot_grid(
+    plotlist = all_plots,
+    ncol = 1,
+    align = "v"
+)
+
+final_plot
+```
+
+```{r prepare-gbc-umap-data}
+# Combine UMAP coordinates with metadata for the custom final GBC figure.
+umap_embed <- Embeddings(gbc_subset_noNeur, "umap")
+
+module_colors <- c(
+  "Sus_Features1" = "#ffff33",
+  "Bowmans_Features1" = "#f781bf",
+  "Basal_OE_Features1" = "#a65628",
+  "Tuft_Cells_Features1" = "#ff7f00",
+  "GBC_Features1" = "#984ea3"
+)
+module_labels <- c(
+  "Sus_Features1" = "Sustentacular",
+  "Bowmans_Features1" = "Bowmans",
+  "Basal_OE_Features1" = "HBC",
+  "Tuft_Cells_Features1" = "Microvillus",
+  "GBC_Features1" = "GBC"
+)
+modules <- names(module_colors)
+
+plot_long <- FetchData(gbc_subset_noNeur, vars = c("umap_1", "umap_2", modules)) |>
+  tibble::rownames_to_column("cell") |>
+  pivot_longer(cols = all_of(modules), names_to = "module", values_to = "score") |>
+  mutate(module = factor(module, levels = modules))
+
+lins <- ggplot(plot_long, aes(x = umap_1, y = umap_2)) +
+  geom_point(data = subset(plot_long, score == 0),
+             color = "grey90", size = 0.8, shape = 16, stroke = 0) +
+  geom_point(data = subset(plot_long, score > 0) |> arrange(score),
+             aes(color = module, alpha = score), size = 1.8, shape = 16, stroke = 0) +
+  scale_color_manual(values = module_colors, labels = module_labels) +
+  scale_alpha(range = c(0.3, 1)) +
+  theme_classic(base_size = 11) +
+  labs(title = "UMAP Expression of Key Modules", x = "UMAP 1", y = "UMAP 2") +
+  guides(alpha = "none", color = guide_legend(override.aes = list(size = 4)))
+
+cluster_plot <- DimPlot(gbc_subset_noNeur, reduction = "umap", group.by = "RNA_snn_res.0.7") +
+  labs(title = "UMAP Clustering", x = "UMAP 1", y = "UMAP 2")
+
+print(lins)
+print(lins | cluster_plot)
+```
+```{r plot-gbc-cluster-membership}
+# Summarize sample contributions and assemble the final GBC membership plots.
+# Keep samples in figure order
+sample_order <- c("p1", "p3", "p5", "p8", "p15", "p22")
+sample_order <- sample_order[sample_order %in% unique(gbc_subset_noNeur$sample)]
+
+# Use the same UMAP limits for every age panel
+umap_coords <- Embeddings(gbc_subset_noNeur, "umap")
+umap_limits <- list(
+  xmin = min(umap_coords[, 1]),
+  xmax = max(umap_coords[, 1]),
+  ymin = min(umap_coords[, 2]),
+  ymax = max(umap_coords[, 2])
+)
+
+# Colors for the retained noNeur clusters
+cluster_colors <- c(
+  "0" = "#F8766D",
+  "1" = "#C49A00",
+  "2" = "#53B400",
+  "4" = "#00C094",
+  "9" = "#00B6EB",
+  "10" = "#A58AFF",
+  "11" = "#FB61D7"
+)
+
+sample_umaps <- lapply(sample_order, function(sample_id) {
+  DimPlot(
+    gbc_subset_noNeur[, gbc_subset_noNeur$sample == sample_id],
+    reduction = "umap",
+    group.by = "RNA_snn_res.0.7",
+    cols = cluster_colors,
+    pt.size = 0.5
+  ) +
+    coord_cartesian(
+      xlim = c(umap_limits$xmin, umap_limits$xmax),
+      ylim = c(umap_limits$ymin, umap_limits$ymax)
+    ) +
+    ggtitle(sample_id) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.1)
+    )
+})
+
+# Put the panels in one row
+age_umap_plot <- wrap_plots(sample_umaps, nrow = 1)
+
+age_umap_plot
+```
+
+```{r save-gbc-object, cache=FALSE}
+# Return the sample column to character type after plotting.
+gbc_subset_noNeur$sample <- as.character(gbc_subset_noNeur$sample)
+
+# Save the final non-neuronal GBC object.
+if (isTRUE(params$save_outputs)) {
+  saveRDS(gbc_subset_noNeur, file.path(params$output_dir, "gbc_subset.rds"))
+}
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this GBC-analysis run.
+sessionInfo()
+```

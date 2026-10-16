@@ -1,0 +1,653 @@
+---
+title: "lineage"
+author: "Dana Bakalar"
+date: "2025-01-15"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  output_dir: "results"
+  save_outputs: true
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, cache=FALSE}
+# Load the packages and shared helpers used to identify and plot the olfactory lineage.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  )
+)
+suppressPackageStartupMessages({
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(SeuratExtend)
+})
+# Load the analysis functions.
+publication_dir <- dirname(normalizePath(knitr::current_input(), winslash = "/", mustWork = TRUE))
+source(file.path(publication_dir, "publication_helpers.R"), local = TRUE)
+```
+
+## Input object
+```{r get_data}
+# Load the whole-epithelium object if it is not already in memory.
+if (!exists("filtered_seurat")) {
+  filtered_seurat <- readRDS(file.path(params$download_dir, "WholeOE.rds"))
+}
+```
+
+## Output directories
+```{r output-folders, cache=FALSE}
+# Define the marker-table folder under the user-selected output folder.
+marker_output_dir <- file.path(params$output_dir, "markers")
+```
+
+
+Find clusters at multiple resolutions
+```{r choose_clustering_res}
+# Display the clustering results at resolutions 0.3 and 1.0.
+resolutions <- c(0.3, 1.0)
+for (res in resolutions) {
+  filtered_seurat <- FindClusters(
+    filtered_seurat,
+    resolution = res,
+    algorithm = 2
+  )
+
+  cluster_col <- paste0("RNA_snn_res.", res)
+
+  p <- DimPlot(
+    filtered_seurat,
+    group.by = cluster_col,
+    reduction = "umap.unintegrated",
+    label = TRUE
+  )
+
+  print(p)
+}
+```
+
+Based on marker gene expression, I chose a resolution of 0.3
+```{r final_clusters_plot}
+# Plot the selected whole-tissue clusters before choosing olfactory-lineage cells.
+clusters <- DimPlot(filtered_seurat, 
+                    reduction = "umap.unintegrated", 
+                    group.by = "RNA_snn_res.0.3", 
+                    label = TRUE) +
+  theme_void() +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "none"  # Removes the legend
+  )
+
+# Add axis labels
+clusters <- clusters + theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2")
+clusters
+```
+
+Identify cells of interest- in this case olfactory epithelial cells 
+
+Make composite cell-type scores for cell types
+```{r marker-panels}
+# Plot established cell-type markers to identify the olfactory-lineage clusters.
+marker_list <- list(
+  Basal_RE                = c("Krt17", "Reg3g"),
+  Bowmans                 = c("Sox9", "Wfdc18"),
+  Goblet_cells            = c("Tff2", "Muc5b"),
+  OB                      = c("Dcc", "Pou3f2", "Igfbpl1", "Dlx2"),
+  Olf_Ensheathing         = c("Npy", "S100b"),
+  Odontogenic_Epithelium  = c("Amelx", "Enam"),
+  Fibroblasts             = c("Col1a1", "Col1a2"),
+  Macrophages             = c("C1qb", "Cd68"),
+  Monocytes               = c("S100a8", "S100a9", "Il1b"),
+  Basal_OE                = c("Trp63", "Krt5"),
+  GBC                     = c("Ascl1", "Kit"),
+  INP                     = c("Neurod1", "Neurog1"),
+  iOSN                    = c("Ebf2", "Gap43"),
+  mOSN                    = c("Omp","Adcy3"),
+  Sus                     = c("Cyp2a5", "Il33"),
+  Tuft_Cells              = c("Ascl3", "Foxi1"))
+
+
+filtered_seurat <- add_module_scores_and_plot(filtered_seurat, 
+                                       marker_list, 
+                                       clustering_colors = NULL, 
+                                       cluster_resolution = "RNA_snn_res.0.3", 
+                                       min_genes_required = 2, 
+                                       ctrl = 5,
+                                       feature_plot_color_low = "white",
+                                       feature_plot_color_high = "blue",
+                                       reduction.name = "umap.unintegrated")
+```
+
+
+Differentiate Goblet and Bowman's at a higher clustering resolution
+```{r secretory-marker-panel}
+# Plot secretory-cell markers to distinguish non-lineage clusters before subsetting.
+marker_list <- list(
+  "Goblet_cells" = c("Tff2","Muc5b"),
+  "Bowmans" = c("Sox9","Wfdc18")
+)
+
+
+filtered_seurat_b <- add_module_scores_and_plot(filtered_seurat, 
+                                       marker_list, 
+                                       clustering_colors = NULL, 
+                                       cluster_resolution = "RNA_snn_res.1", 
+                                       min_genes_required = 2, 
+                                       ctrl = 5,
+                                       feature_plot_color_low = "white",
+                                       feature_plot_color_high = "blue",
+                                       reduction.name = "umap.unintegrated")
+```
+
+```{r order-lineage-metadata}
+# Set a stable metadata column order.
+lineage_metadata_columns <- c(
+  "seq_folder",
+  "nUMI",
+  "nGene",
+  "log10GenesPerUMI",
+  "mitoRatio",
+  "cells",
+  "sample",
+  "unintegrated_clusters",
+  "Batch",
+  "RNA_snn_res.0.3",
+  "seurat_clusters",
+  "Basal_RE_Features1",
+  "Bowmans_Features1",
+  "Goblet_cells_Features1",
+  "OB_Features1",
+  "Olf_Ensheathing_Features1",
+  "Odontogenic_Epithelium_Features1",
+  "Fibroblasts_Features1",
+  "Macrophages_Features1",
+  "Monocytes_Features1",
+  "Basal_OE_Features1",
+  "GBC_Features1",
+  "INP_Features1",
+  "iOSN_Features1",
+  "mOSN_Features1",
+  "Sus_Features1",
+  "Tuft_Cells_Features1",
+  "RNA_snn_res.1"
+)
+filtered_seurat@meta.data <- filtered_seurat@meta.data[
+  ,
+  lineage_metadata_columns,
+  drop = FALSE
+]
+```
+
+
+Remove, and Plot removed/retained
+```{r select-lineage-clusters}
+# Retain the lineage clusters and exclude cluster 15 before reprocessing.
+# Define the RNA_snn_res.0.3 clusters, excluding cluster 15 for now.
+keep_clusters_0.3 <- c(0,1,2,14,4,3,12,7,16,8,10)  # excluding 15
+
+# Get cells in those clusters directly
+cells_0.3 <- WhichCells(filtered_seurat, expression = RNA_snn_res.0.3 %in% keep_clusters_0.3)
+
+# Get the intersection cells of cluster 15 at 0.3 and cluster 31 at 1.0
+cells_15_0.3 <- WhichCells(filtered_seurat, expression = RNA_snn_res.0.3 == 15)
+cells_31_1 <- WhichCells(filtered_seurat, expression = RNA_snn_res.1 == 31)
+cells_15_in_31 <- intersect(cells_15_0.3, cells_31_1)
+
+# Combine all the desired cells
+final_cells <- c(cells_0.3, cells_15_in_31)
+
+# Subset the object
+filtered_seurat_lineage <- subset(filtered_seurat, cells = final_cells)
+
+filtered_seurat$lineage_selection <- ifelse(
+  colnames(filtered_seurat) %in% final_cells,
+  "Retained",
+  "Removed"
+)
+
+lineage_selection_plot <- DimPlot(
+  filtered_seurat,
+  reduction = "umap.unintegrated",
+  group.by = "lineage_selection",
+  cols = c("Removed" = "grey85", "Retained" = "#d95f02"),
+  shuffle = TRUE
+) +
+  theme_void() +
+  theme(
+    plot.title = element_blank(),
+    legend.title = element_blank()
+  ) +
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2")
+
+lineage_selection_plot
+```
+
+
+Recalculate dimensional reductions and clusters after subsetting. Resolution 0.4 is used below.
+```{r recluster-lineage-first-pass}
+# Reprocess the first lineage subset to identify remaining contaminants.
+filtered_seurat_lineage <- process_seurat_object(filtered_seurat_lineage, resolution.range = 0.4)
+```
+
+```{r save-first-lineage-pass, cache=FALSE}
+# Save the first lineage subset.
+if (isTRUE(params$save_outputs)) {
+  saveRDS(filtered_seurat_lineage, file.path(params$output_dir, "lin_w_12.rds"))
+}
+```
+
+WHAT IS CLUSTER 12??
+Find markers of it
+```{r find-first-pass-markers}
+# Find first-pass cluster markers so remaining non-lineage groups can be identified.
+Idents(filtered_seurat_lineage) <- "RNA_snn_res.0.4"
+
+top_30_cluster_12 <- FindMarkers(
+  filtered_seurat_lineage,
+  ident.1 = "12",
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+) %>%
+  tibble::rownames_to_column("gene") %>%
+  arrange(desc(avg_log2FC)) %>%
+  head(30)
+
+print(top_30_cluster_12)
+```
+
+Take out cluster 12
+```{r remove-non-lineage-clusters}
+# Remove the remaining non-lineage clusters before the final clustering pass.
+filtered_seurat_lineageb <- subset(
+  filtered_seurat_lineage,
+  subset = (RNA_snn_res.0.4 %in%  c("0","1","2","3","4","5","6","7", "8", "9", "10", "11","13"))  
+)
+```
+
+
+Recalculate dimensional reductions and clusters after removing contaminants. Resolution 0.6 is used below.
+```{r recluster-lineage-second-pass}
+# Reprocess the cleaned lineage cells at resolution 0.6.
+filtered_seurat_lineageb <- process_seurat_object(filtered_seurat_lineageb, resolution.range = 0.6)
+```
+
+Cell Cycle Analysis
+```{r cell_cycle_scores}
+# Score cell-cycle phase so proliferation can be inspected across final lineage clusters.
+phase_analysis <- score_and_plot_cell_cycle(filtered_seurat_lineageb, cc_genes = cc.genes, reduction = "umap")
+
+print(phase_analysis[["phase_plot"]])
+
+phase_plot <- phase_analysis[["phase_plot"]] + 
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2")
+phase_plot
+
+```
+
+
+
+Identify positive markers for each cluster and export the full and filtered marker tables.
+```{r find-second-pass-markers}
+# Find markers for the final lineage clusters and optionally write their tables.
+marker_results <- find_markers(filtered_seurat_lineageb, "RNA_snn_res.0.6")
+
+resolutions <- 0.6 #standin
+for (res in resolutions) {
+  cluster_col <- paste0("RNA_snn_res.", res)
+  marker_results <- marker_results #standin
+  res_tag <- gsub("\\.", "", as.character(res))
+  write.csv(marker_results$markers,
+    file.path(marker_output_dir, paste0("allMarkers_Res", res_tag, "_allcells.csv")),
+    row.names = FALSE)
+  write.csv(marker_results$top_markers,
+    file.path(marker_output_dir, paste0("topMarkers_Res", res_tag, "_allcells.csv")),
+    row.names = FALSE)
+}
+```
+
+
+```{r plot-lineage-by-age}
+# Order ages explicitly and plot final lineage clusters across developmental time.
+# Ensure the 'sample' factor is ordered correctly
+filtered_seurat_lineageb$sample <- factor(filtered_seurat_lineageb$sample, levels = c("p1", "p3", "p5", "p8", "p15", "p22"))
+
+seq_folder_colors <- c(
+  "p5_R1_counts" = "#a02b93",  
+  "p5_R2_counts" = "#23ffff",  
+
+  "p8_R1_counts" = "#a02b93",  
+  "p8_M_counts" = "#23ffff",  
+
+  "p1_F_counts" = "#a02b93",  
+  "p1_M_counts" = "#23ffff",  
+  "p1_F_2_counts" = "#f6c141",  
+  "p1_M_2_counts" = "#4169e1",  
+
+  "p3_F_counts" = "#a02b93",  
+  "p3_M_counts" = "#23ffff", 
+  "p3_F_2_counts" = "#f6c141",  
+  "p3_M_2_counts" = "#4169e1",  
+
+
+  "p15_R1_counts" = "#a02b93",  
+  "p15_F_counts" = "#23ffff", 
+
+  "p22_F_counts" = "#a02b93",  
+  "p22_M_counts" = "#23ffff",  
+  "p22_F_2_counts" = "#f6c141",  
+  "p22_M_2_counts" = "#4169e1"
+)
+
+
+samples <- levels(filtered_seurat_lineageb$sample)
+
+plots <- lapply(samples, function(s) {
+  p <- DimPlot(filtered_seurat_lineageb[, filtered_seurat_lineageb$sample == s],
+               reduction = "umap",
+               group.by = "seq_folder",
+               shuffle = TRUE) +
+    scale_color_manual(values = seq_folder_colors) +
+    ggtitle(s) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      strip.text = element_blank(),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  return(p)
+})
+
+# Add axis labels only to first plot
+plots[[1]] <- plots[[1]] + 
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2") 
+# Combine with patchwork
+p <- wrap_plots(plots, nrow = 1) 
+p
+```
+
+
+```{r plot-lineage-by-sample}
+# Plot the final lineage embedding by sample to inspect replicate contributions.
+DimPlot(filtered_seurat_lineageb, reduction = "umap", group.by = "sample", shuffle = T)
+```
+
+```{r assign-lineage-cluster-names}
+# Apply the established final lineage names so the following summaries and plots use their published labels.
+Idents(object = filtered_seurat_lineageb) <- "RNA_snn_res.0.6"
+
+new_cluster_names <- c(
+  "1"  = "mOSN 3",  
+  "2"  = "mOSN 1", 
+  "4"  = "mOSN 2", 
+  "3"  = "iOSN 3",  
+  "0"  = "iOSN 2", 
+  "5"  = "iOSN 1", 
+  "10" = "early INP", 
+  "6"  = "late INP",
+  "7"  = "GBC",     
+  "8"  = "Sus",
+  "9"  = "HBC", 
+  "11" = "MV",
+  "12" = "Bowmans", 
+  "13" = "Tuft MV"
+)
+
+filtered_seurat_lineageb$cluster_name <- dplyr::recode(
+  as.character(filtered_seurat_lineageb$RNA_snn_res.0.6),
+  !!!new_cluster_names
+)
+
+desired_order <- c(
+  "mOSN 3","mOSN 2", "mOSN 1", 
+  "iOSN 3", "iOSN 2", "iOSN 1",
+  "late INP","early INP",
+  "GBC", "Sus", "HBC", "MV", "Tuft MV", "Bowmans"
+)
+filtered_seurat_lineageb$cluster_name <- factor(
+  filtered_seurat_lineageb$cluster_name,
+  levels = desired_order
+)
+
+Idents(filtered_seurat_lineageb) <- "cluster_name"
+```
+
+```{r prepare-lineage-counts}
+# Count cells by sample and cluster before using those counts in the summaries and plots below.
+filtered_seurat_lineageb$sample <- factor(
+  filtered_seurat_lineageb$sample,
+  levels = c("p1", "p3", "p5", "p8", "p15", "p22")
+)
+
+# Calculate the total number of cells per sample.
+total_cells_per_sample <- filtered_seurat_lineageb@meta.data %>%
+  group_by(sample) %>%
+  summarise(total_cells = n())
+
+# Calculate counts per cluster and sample.
+counts <- filtered_seurat_lineageb@meta.data %>%
+  group_by(sample, cluster_name) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+# Add the sample totals and calculate each cluster's percentage.
+counts <- merge(counts, total_cells_per_sample, by = "sample")
+counts <- counts %>%
+  group_by(sample, cluster_name) %>%
+  mutate(percentage = (count / total_cells) * 100) %>%
+  ungroup()
+```
+
+Sample by cluster counts
+```{r assign-broad-lineage-groups}
+# Map final cluster numbers to broad lineage groups.
+
+
+counts <- counts %>%
+  mutate(
+    broad_cluster = case_when(
+      grepl("mOSN", as.character(cluster_name)) ~ "mOSN",
+      grepl("iOSN", as.character(cluster_name)) ~ "iOSN",
+      grepl("INP", as.character(cluster_name)) ~ "INP",
+      grepl("MV", as.character(cluster_name)) ~ "MV",
+      TRUE ~ as.character(cluster_name)
+    )
+  )
+
+counts_summarized <- counts %>%
+  group_by(sample, broad_cluster) %>%
+  summarise(
+    count = sum(count),
+    total_cells = unique(total_cells),
+    .groups = "drop"
+  ) %>%
+  mutate(percent = (count / total_cells) * 100)
+
+wide_counts <- counts_summarized %>%
+  select(sample, broad_cluster, percent) %>%
+  pivot_wider(names_from = broad_cluster, values_from = percent)
+
+print(wide_counts)
+```
+
+Make colors
+```{r plot-broad-lineage-groups}
+# Plot broad lineage groups with a fixed order and color palette.
+base_colors <- c(
+    mOSN = "#e41a1c",      # red
+    iOSN = "#377eb8", # blue
+    INP = "#4daf4a",    # green
+    GBC = "#984ea3",        # purple
+    MV = "#ff7f00",    # orange
+    Sus = "#ffff33",      # yellow
+    HBC = "#a65628",     # brown
+    Bowmans = "#f781bf"      # pink
+)
+
+
+
+# Build group_label and colors
+counts <- counts %>%
+  mutate(group_label = interaction(broad_cluster, cluster_name, sep = "_"))
+
+group_colors <- c()
+for (bc in unique(counts$broad_cluster)) {
+  subclusters <- counts %>%
+    filter(broad_cluster == bc) %>%
+    arrange(cluster_name) %>%
+    pull(cluster_name) %>%
+    unique()
+
+  n <- length(subclusters)
+  shades <- generate_shades(base_colors[[bc]], n)
+  names(shades) <- paste(bc, subclusters, sep = "_")
+  group_colors <- c(group_colors, shades)
+}
+my_palette <- group_colors
+names(my_palette) <- sub("^[^_]+_", "", names(my_palette))
+```
+
+```{r cells_in_clusters_by_sample}
+# Count cells from each sample in every cluster to show replicate membership.
+
+clusters <- DimPlot(filtered_seurat_lineageb, reduction = "umap", label = TRUE,
+                    cols = my_palette) +
+  theme_void() +
+  theme(
+    plot.title = element_blank(),
+    legend.position = "none"
+  )
+clusters <- clusters + theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2")
+
+# Plot the percentage distribution by sample and cluster, with sample on y-axis.
+clust_membership2 <- ggplot(counts, aes(x = percentage, y = sample, fill = cluster_name)) +
+  geom_bar(stat = 'identity', position = 'stack', color = "darkgrey", size = 0.2) +  
+  xlab("Percentage (%)") +
+  ylab("Sample") +
+  ggtitle("Percentage of Each Sample in Each Cluster") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::percent_format(scale = 1))+
+  scale_fill_manual(values = my_palette)  
+pl <- clusters| clust_membership2
+pl
+```
+
+Check that celltype distribution is similar between replicates
+```{r summarize-lineage-membership}
+# Summarize lineage membership by age for the stacked composition plot.
+
+filtered_seurat_lineageb$sample <- factor(filtered_seurat_lineageb$sample, 
+                                           levels = c("p1", "p3", "p5", "p8", "p15", "p22"))
+
+# Step 1: Total cells per seq_folder (replicate)
+total_cells_per_replicate <- filtered_seurat_lineageb@meta.data %>%
+  group_by(sample, seq_folder) %>%
+  summarise(total_cells = n(), .groups = "drop")
+
+# Step 2: Counts per cluster, sample, and seq_folder
+counts <- filtered_seurat_lineageb@meta.data %>%
+  group_by(sample, seq_folder, cluster_name) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Step 3: Merge and calculate percentages
+counts <- counts %>%
+  left_join(total_cells_per_replicate, by = c("sample", "seq_folder")) %>%
+  mutate(percentage = (count / total_cells) * 100)
+
+# Plot the replicate-level lineage percentages.
+clust_membership_all <- ggplot(counts, 
+                               aes(x = percentage, 
+                                   y = seq_folder, 
+                                   fill = cluster_name)) +
+  geom_bar(stat = 'identity', position = 'stack', color = "darkgrey", size = 0.2) +
+  facet_grid(sample ~ ., scales = "free_y", space = "free_y") +  # Vertical facets
+  xlab("Percentage (%)") +
+  ylab("Replicate") +
+  ggtitle("Cluster Composition: Replicates Grouped by Sample") +
+  theme_minimal() +
+  theme(
+    strip.text.y = element_text(size = 12, face = "bold", angle = 0),
+    axis.text.y = element_text(size = 8),
+    legend.position = "right"
+  ) +
+  scale_x_continuous(labels = scales::percent_format(scale = 1)) +
+  scale_fill_manual(values = my_palette)
+
+print(clust_membership_all)
+```
+
+
+what clusters have what sample in them?
+```{r summarize-cluster-composition}
+# Summarize final cluster composition by sample for the membership figure.
+
+# Extract cluster assignments
+Idents(object = filtered_seurat_lineageb) <- "cluster_name"
+cluster_assignments <- Idents(filtered_seurat_lineageb)
+
+# Extract sample information (assuming it's stored in metadata under "sample" column)
+samples <- filtered_seurat_lineageb@meta.data$seq_folder
+
+# Create a data frame with cluster assignments and sample information
+cluster_sample_df <- data.frame(Cluster = cluster_assignments, Sample = samples)
+
+# Create a contingency table
+contingency_table <- table(cluster_sample_df$Cluster, cluster_sample_df$Sample)
+
+# Convert the contingency table to a data frame for easier manipulation
+contingency_df <- as.data.frame(contingency_table)
+
+# Check which samples are represented in each cluster
+# This creates a list of clusters with the samples they contain
+clusters_with_samples <- split(contingency_df, contingency_df$Var1)
+
+# Identify clusters that do not contain all samples
+all_samples <- unique(samples)
+missing_samples <- lapply(clusters_with_samples, function(cluster_data) {
+  present_samples <- cluster_data$Var2[cluster_data$Freq > 0]
+  setdiff(all_samples, present_samples)
+})
+
+# Print results
+for (cluster in names(missing_samples)) {
+  if (length(missing_samples[[cluster]]) > 0) {
+    cat("Cluster", cluster, "is missing samples:", paste(missing_samples[[cluster]], collapse = ", "), "\n")
+  } else {
+    cat("Cluster", cluster, "contains all samples.\n")
+  }
+}
+```
+
+
+```{r save-lineage-objects, cache=FALSE}
+# Save the final lineage object for the GBC, HBC, and trajectory analyses.
+# Remove the temporary plotting label before saving.
+Idents(filtered_seurat_lineageb) <- "RNA_snn_res.0.6"
+filtered_seurat_lineageb$cluster_name <- NULL
+filtered_seurat_lineageb$sample <- as.character(filtered_seurat_lineageb$sample)
+
+if (isTRUE(params$save_outputs)) {
+  saveRDS(filtered_seurat_lineageb, file.path(params$output_dir, "olfactory_lineage.rds"))
+}
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this lineage-analysis run.
+sessionInfo()
+```

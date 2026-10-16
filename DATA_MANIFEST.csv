@@ -1,0 +1,10 @@
+filename,size_bytes,step_that_needs_it,rerun_tier,zenodo_doi
+WholeOE.rds,1765418868,03_extract_olfactory_lineage,quick_complete,PENDING
+olfactory_lineage.rds,1275888027,04_GBC_05_HBC_06_clean_lineage,quick_complete,PENDING
+gbc_subset.rds,88670781,08_plot_precomputed_tradeseq,quick_complete,PENDING
+hbc_subset.rds,67316065,05_output_reference,quick_complete,PENDING
+cleaned_for_slingshot_60265.rds,1245317055,07_run_slingshot,quick_complete,PENDING
+slingshot_output.rds,1245317072,08_plot_precomputed_tradeseq,quick_complete,PENDING
+tradeseq_fit_combined.rds,91197425,08_plot_precomputed_tradeseq,quick_complete,PENDING
+ALL_TF.Rda,10561,08_plot_precomputed_tradeseq,quick_complete,PENDING
+cellchat_input.RData,731605394,09_cellchat_gbc_incoming_p5_p22,quick_complete,PENDING

@@ -1,0 +1,394 @@
+---
+title: "002_QC_and_Integration"
+author: "Dana Bakalar"
+date: "2024-06-14"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  output_dir: "results"
+  save_outputs: true
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, cache=FALSE}
+# Load the packages and shared helpers used for QC, clustering, and plots.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  )
+)
+suppressPackageStartupMessages({
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(SeuratExtend)
+})
+
+# Load the shared helper functions used below.
+publication_dir <- dirname(normalizePath(knitr::current_input(), winslash = "/", mustWork = TRUE))
+source(file.path(publication_dir, "publication_helpers.R"), local = TRUE)
+```
+
+```{r get_data}
+# Load the merged object if it is not already in memory.
+if (!exists("merged_seurat")) {
+  merged_seurat <- readRDS(file.path(params$download_dir, "001_Dev_merged.rds"))
+}
+```
+
+## Output directories
+```{r output-folders, cache=FALSE}
+# Define the marker-table folder under the user-selected output folder.
+marker_output_dir <- file.path(params$output_dir, "markers")
+```
+
+QC steps
+```{r name_samples}
+# Add number of genes per UMI for each cell to metadata
+merged_seurat$log10GenesPerUMI <- log10(merged_seurat$nFeature_RNA) / log10(merged_seurat$nCount_RNA)
+
+# Mitochondrial Ratio
+merged_seurat$mitoRatio <- PercentageFeatureSet(object = merged_seurat, pattern = "^mt-")
+merged_seurat$mitoRatio <- merged_seurat@meta.data$mitoRatio / 100
+
+# Create metadata dataframe
+metadata <- merged_seurat@meta.data
+# Add cell IDs to metadata
+metadata$cells <- rownames(metadata)
+# Create sample column
+metadata$sample <- NA
+
+# Derive the developmental age from each sequencing-folder name.
+metadata$sample[which(str_detect(metadata$orig.ident, "p1_"))] <- "p1"
+metadata$sample[which(str_detect(metadata$orig.ident, "p3_"))] <- "p3"
+metadata$sample[which(str_detect(metadata$orig.ident, "p5_"))] <- "p5"
+metadata$sample[which(str_detect(metadata$orig.ident, "p8_"))] <- "p8"
+metadata$sample[which(str_detect(metadata$orig.ident, "p15_"))] <- "p15"
+metadata$sample[which(str_detect(metadata$orig.ident, "p22_"))] <- "p22"
+
+# Rename columns
+metadata <- metadata %>%
+  dplyr::rename(seq_folder = orig.ident,
+                nUMI = nCount_RNA,
+                nGene = nFeature_RNA)
+
+# Add metadata back to Seurat object
+merged_seurat@meta.data <- metadata
+```
+
+Make the QC plots for the merged data
+```{r print_qc_plots, warning=FALSE, message=FALSE}
+# Build and print the pre-filter QC plots so the starting distributions are visible.
+merged_plots <- qc_plots(merged_seurat)
+print(merged_plots)
+```
+
+
+```{r filter_QC}
+# Filter out low quality cells 
+filtered_seurat <- subset(x = merged_seurat, 
+                          subset= (nUMI >= 1000) & 
+                            (nGene >= 1000) & 
+                            (log10GenesPerUMI > 0.80) & 
+                            (mitoRatio < 0.20))
+```
+
+
+```{r comparison_plots, warning=FALSE, message=FALSE}
+# Generate qc plots
+filtered_plots <- qc_plots(filtered_seurat)
+
+# Arrange plots side-by-side
+p2 <- merged_plots[[2]] | filtered_plots[[2]] 
+p3 <- merged_plots[[3]] | filtered_plots[[3]]
+p4 <- merged_plots[[4]] | filtered_plots[[4]]
+p5 <- merged_plots[[5]] | filtered_plots[[5]]
+p6 <- merged_plots[[6]] | filtered_plots[[6]]
+
+p2
+p3
+p4
+p5
+p6
+```
+
+
+Plot cells per sample before/after filtering
+```{r prepare-filter-counts}
+# Combine pre-filter and post-filter metadata so retained cell counts can be compared.
+metadata_before <- merged_seurat@meta.data  # full dataset
+metadata_after <- filtered_seurat@meta.data  # after filtering
+metadata_before$filter_status <- "before"
+metadata_after$filter_status <- "after"
+combined_metadata <- rbind(metadata_before, metadata_after)
+
+cell_counts <- combined_metadata %>%
+  group_by(seq_folder, sample, filter_status) %>%
+  summarise(n = n(), .groups = "drop")
+cell_counts_wide <- cell_counts %>%
+  pivot_wider(names_from = filter_status, values_from = n)
+
+
+cells<- ggplot(cell_counts, aes(x = seq_folder, y = n, fill = sample)) +
+  geom_col(data = subset(cell_counts, filter_status == "before"), 
+           alpha = 0.3, position = "dodge") +
+  geom_col(data = subset(cell_counts, filter_status == "after"), 
+           position = "dodge") +
+  geom_text(data = cell_counts_wide, 
+            aes(y = before, label = after, group = sample), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 3) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("NCells: Before vs After Filtering")
+
+
+print(cells)
+```
+
+Plot removed cells by sex
+```{r summarize-filter-counts}
+# Summarize retained cells by age and sex for the QC retention table and plot.
+cell_counts_wide <- cell_counts %>%
+  pivot_wider(names_from = filter_status, values_from = n, values_fill = 0) %>%
+  mutate(
+    sex = case_when(
+      seq_folder %in% c("p15_F_counts","p1_F_2_counts","p1_F_counts","p22_F_2_counts","p22_F_counts","p3_F_counts","p8_R1_counts") ~ "F",
+      seq_folder %in% c("p15_R1_counts","p1_M_2_counts","p1_M_counts","p22_M_2_counts","p22_M_counts","p3_M_counts","p5_R1_counts","p5_R2_counts","p8_M_counts") ~ "M",
+      TRUE ~ NA_character_
+    ),
+    sample  = factor(sample, levels = c("p1","p3","p5","p8","p15","p22")),
+    removed = pmax(before - after, 0)
+  )
+
+offsets <- cell_counts_wide %>%
+  arrange(sample, sex, seq_folder) %>%
+  group_by(sample) %>%
+  mutate(sample_offset = cumsum(before) - before) %>%
+  ungroup()
+
+plot_data <- bind_rows(
+  offsets %>% transmute(sample, seq_folder, sex, status = "removed",
+                        n = removed, ymin = sample_offset, ymax = sample_offset + removed),
+  offsets %>% transmute(sample, seq_folder, sex, status = "retained",
+                        n = after, ymin = sample_offset + removed, ymax = sample_offset + removed + after)
+) %>%
+  mutate(status = factor(status, levels = c("removed","retained")))
+
+p_sex <- ggplot(plot_data) +
+  geom_rect(aes(xmin = as.numeric(sample) - 0.4, xmax = as.numeric(sample) + 0.4,
+                ymin = ymin, ymax = ymax, fill = sex, alpha = status),
+            color = "white", linewidth = 0.5) +
+  geom_text(data = ~subset(.x, status == "retained" & n > 0),
+            aes(as.numeric(sample), (ymin + ymax)/2, label = n), size = 3) +
+  scale_fill_manual(values = c("F" = "#e41a1c", "M" = "#377eb8")) +
+  scale_alpha_manual(values = c("removed" = 0.3, "retained" = 1),
+                     labels = c("Removed","Retained"), name = "Status") +
+  scale_x_continuous(breaks = 1:6, labels = levels(plot_data$sample)) +
+  theme_classic() +
+  labs(y = "N Cells", x = "Age", title = "NCells: Before vs After Filtering")
+p_sex
+```
+
+
+Process QC'd seurat
+```{r normalize}
+# normalize data
+filtered_seurat <- NormalizeData(filtered_seurat)
+filtered_seurat <- FindVariableFeatures(filtered_seurat, selection.method = "vst", nfeatures = 2000)
+filtered_seurat <- ScaleData(filtered_seurat)
+```
+
+Decide how many PCs to use
+```{r choose_pcs}
+# Run PCA and select the number of PCs from the variation cutoffs below.
+filtered_seurat <- RunPCA(filtered_seurat)
+# Determine percent of variation associated with each PC
+# Compare the 90% cumulative-variation cutoff with the point where each PC
+# contributes less than 5% of the standard deviation.
+pct <- filtered_seurat[["pca"]]@stdev / sum(filtered_seurat[["pca"]]@stdev) * 100
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+# Find the first PC that satisfies both cutoffs.
+co1 <- which(cumu > 90 & pct < 5)[1]
+# PC where the percent change in variation between consecutive PCs is less than 0.1%
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+# Use the smaller of the two PC cutoffs.
+pcs <- min(co1, co2)
+
+
+print(pcs)
+```
+
+
+```{r umap}
+# Build the neighbor graph, UMAP embedding, and clusters.
+filtered_seurat <- FindNeighbors(filtered_seurat, dims = 1:pcs, reduction = "pca")
+filtered_seurat <- RunUMAP(filtered_seurat, dims = 1:pcs, reduction = "pca", reduction.name = "umap.unintegrated")
+filtered_seurat <- FindClusters(filtered_seurat, resolution = 0.3, cluster.name = "unintegrated_clusters")
+```
+
+add batches to the data
+```{r add_batch_data}
+# Define the batch assignment based on seq_folder
+filtered_seurat <- filtered_seurat %>%
+  AddMetaData(object = ., metadata = case_when(
+    .$seq_folder %in% c("p5_R1_counts", "p5_R2_counts", "p8_R1_counts", "p15_R1_counts") ~ 1,  # Corrected this line
+    .$seq_folder %in% c("p1_F_counts", "p1_M_counts", "p3_F_counts", "p3_M_counts", "p8_M_counts", "p15_F_counts", "p22_F_counts", "p22_M_counts") ~ 2,
+    .$seq_folder %in% c("p1_F_2_counts", "p1_M_2_counts", "p22_F_2_counts", "p22_M_2_counts") ~ 3,
+    TRUE ~ NA_real_  # Default to NA if none of the conditions match
+  ), col.name = "Batch")
+
+# Verify the metadata
+metadata <- filtered_seurat@meta.data
+
+# Check the distribution of Batch values
+batch_distribution <- table(metadata$Batch)
+print("Batch distribution:")
+print(batch_distribution)
+
+# Check which seq_folder values are assigned to each Batch
+batch_assignments <- metadata %>% 
+  group_by(seq_folder) %>% 
+  summarize(Batch = unique(Batch))
+
+print("Batch assignments for each seq_folder:")
+print(batch_assignments)
+```
+
+```{r plot_by_batch}
+# Plot the embedding by sequencing batch to inspect batch composition.
+batch_colors <-c("#23ffff", "#f6c141", "#4169e1") 
+
+batch <- DimPlot(filtered_seurat, reduction = "umap.unintegrated", group.by = c("Batch"), shuffle =T)+
+  scale_color_manual(values = batch_colors)+
+  theme_void() +
+    theme(
+      plot.title = element_blank()
+    )
+# Add axis labels only to first plot
+batch <- batch + theme_umap_arrows(x_label = "UMAP_1",
+  y_label = "UMAP_2")
+batch
+```
+
+```{r plot_by_sample}
+# Ensure the 'sample' factor is ordered correctly
+filtered_seurat$sample <- factor(filtered_seurat$sample, levels = c("p1", "p3", "p5", "p8", "p15", "p22"))
+
+seq_folder_colors <- c(
+  "p5_R1_counts" = "#a02b93",  
+  "p5_R2_counts" = "#23ffff",  
+
+  "p8_R1_counts" = "#a02b93",  
+  "p8_M_counts" = "#23ffff",  
+
+  "p1_F_counts" = "#a02b93",  
+  "p1_M_counts" = "#23ffff",  
+  "p1_F_2_counts" = "#f6c141",  
+  "p1_M_2_counts" = "#4169e1",  
+
+  "p3_F_counts" = "#a02b93",  
+  "p3_M_counts" = "#23ffff", 
+  "p3_F_2_counts" = "#f6c141",  
+  "p3_M_2_counts" = "#4169e1",  
+
+
+  "p15_R1_counts" = "#a02b93",  
+  "p15_F_counts" = "#23ffff", 
+
+  "p22_F_counts" = "#a02b93",  
+  "p22_M_counts" = "#23ffff",  
+  "p22_F_2_counts" = "#f6c141",  
+  "p22_M_2_counts" = "#4169e1"#,   
+
+)
+
+
+samples <- levels(filtered_seurat$sample)
+
+plots <- lapply(samples, function(s) {
+  p <- DimPlot(filtered_seurat[, filtered_seurat$sample == s],
+               reduction = "umap.unintegrated",
+               group.by = "seq_folder",
+               shuffle = TRUE) +
+    scale_color_manual(values = seq_folder_colors) +
+    ggtitle(s) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      strip.text = element_blank(),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  return(p)
+})
+
+# Add axis labels only to first plot
+plots[[1]] <- plots[[1]] + 
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2") 
+# Combine with patchwork
+p <- wrap_plots(plots, nrow = 1) 
+p
+```
+
+```{r plot_qc_metrics}
+# Plot QC metrics on the embedding to inspect remaining technical structure.
+c <- FeaturePlot(filtered_seurat, features = c("nUMI","nGene","log10GenesPerUMI", "mitoRatio"), reduction = "umap.unintegrated")
+c
+```
+
+Join the layers
+```{r join_layers}
+# Join the Seurat assay layers before saving.
+# Store sample labels as plain text
+# class after temporarily using a factor to control plot ordering.
+filtered_seurat$sample <- as.character(filtered_seurat$sample)
+filtered_seurat <- JoinLayers(filtered_seurat)
+```
+
+
+Find markers of each cluster 
+```{r cluster_markers}
+# Find and optionally save per-cluster markers for interpretation of the whole-tissue object.
+resolutions <- "unintegrated_clusters"
+
+for (res in resolutions) {
+  cluster_col <- res   # use column name directly
+  marker_results <- find_markers(filtered_seurat, cluster_col)
+  res_tag <- gsub("\\.", "", as.character(res))
+  write.csv(marker_results$markers,
+    file.path(marker_output_dir, paste0("allMarkers_Res", res_tag, "_allcells.csv")),
+    row.names = FALSE)
+  write.csv(marker_results$top_markers,
+    file.path(marker_output_dir, paste0("topMarkers_Res", res_tag, "_allcells.csv")),
+    row.names = FALSE)
+}
+```
+
+
+```{r save_it, cache=FALSE}
+# Save the QC-complete whole-tissue object for notebook 03 when output writing is enabled.
+if (isTRUE(params$save_outputs)) {
+  saveRDS(filtered_seurat, file.path(params$output_dir, "WholeOE.rds"))
+}
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this QC and integration run.
+sessionInfo()
+```

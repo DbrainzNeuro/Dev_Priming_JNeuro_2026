@@ -1,0 +1,47 @@
+Type: Project
+Package: shareableDevAgingPipeline
+Title: Shareable Developmental Aging Pipeline
+Version: 0.1.0
+Description: Manuscript-backed single-cell workflow spanning whole-OE
+    preprocessing, lineage analysis, Slingshot, tradeSeq, and CellChat.
+Encoding: UTF-8
+Depends:
+    R (>= 4.4.2)
+Imports:
+    BiocParallel,
+    CellChat,
+    ComplexHeatmap,
+    cowplot,
+    dplyr,
+    edgeR,
+    future,
+    ggnewscale,
+    ggplot2,
+    gridExtra,
+    harmony,
+    here,
+    htmlwidgets,
+    knitr,
+    Matrix,
+    patchwork,
+    pheatmap,
+    plotly,
+    RColorBrewer,
+    readr,
+    rgl,
+    rlang,
+    rmarkdown,
+    S4Vectors,
+    scales,
+    scran,
+    Seurat,
+    SeuratExtend,
+    SingleCellExperiment,
+    slingshot,
+    tibble,
+    tidyr,
+    tidyverse,
+    tradeSeq,
+    uwot,
+    viridis,
+    yaml

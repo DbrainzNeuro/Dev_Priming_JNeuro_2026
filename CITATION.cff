@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the accompanying paper and the archived software release."
+title: "Shareable developmental aging single-cell pipeline"
+type: software
+authors:
+  - family-names: Bakalar
+    given-names: Dana
+license: MIT
+date-released: 2026-10-15
+preferred-citation:
+  type: article
+  title: "Progressive Fate Restriction of Ascl1-Expressing Stem Cells in the Olfactory Epithelial Niche by Intrinsic and Extrinsic Factors"
+  authors:
+    - family-names: Bakalar
+      given-names: Dana
+  notes: "Complete the journal, year, DOI, and full author list when the paper record is public."

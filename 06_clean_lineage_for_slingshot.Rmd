@@ -1,0 +1,496 @@
+---
+title: "Lineage cleaning before trajectory analysis"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  output_dir: "results"
+  save_outputs: true
+---
+
+```{r setup, message=FALSE, warning=FALSE, cache=FALSE}
+# Load the required packages and define user-controlled input and output paths.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  )
+)
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(ggplot2)
+  library(dplyr)
+  library(patchwork)
+})
+
+publication_dir <- dirname(normalizePath(knitr::current_input(), winslash = "/", mustWork = TRUE))
+source(file.path(publication_dir, "publication_helpers.R"), local = TRUE)
+
+# Define input and output paths.
+project_dir <- here::here()
+download_dir <- params$download_dir
+results_dir <- params$output_dir
+input_rds <- file.path(download_dir, "olfactory_lineage.rds")
+output_rds <- file.path(results_dir, "cleaned_for_slingshot_60265.rds")
+output_dir <- file.path(results_dir, "plots", "lineage_cleaning")
+marker_output_dir <- file.path(results_dir, "markers")
+
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(marker_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Set random seeds for reproducible dimensionality reduction and clustering.
+pca_seed <- 42L
+umap_2d_seed <- 42L
+cluster_seed <- 0L
+umap_3d_seed <- 12345L
+```
+
+
+```{r marker-lists}
+# Define marker lists used to label the two lineage-processing passes.
+
+
+lineage_marker_list <- list(
+  GBC = c("Kit", "Ascl1", "Mki67"),
+  HBC = c("Krt5", "Trp63", "Krt14"),
+  INP = c("Ebf1", "Ebf2", "Neurog1", "Neurod1"),
+  iOSN = c("Gap43", "Neurod1", "Lhx2"),
+  mOSN = c("Omp", "Adcy3", "Stoml3", "Gnal"),
+  Sus = c("Cyp2g1", "Cyp2a5", "Sec14l3", "Il33"),
+  MV = c("Pou2f3", "Ascl3", "Trpm5", "Gfi1b"),
+  Tuft_MV = c("Trpm5", "Rgs13", "Plcb2", "Alox5ap"),
+  Bowmans = c("Sox9", "Wfdc18")
+)
+
+off_lineage_marker_list <- list(
+  RE_like = c("Reg3g", "Krt15", "Krt13"),
+  Immune = c("Lyz2", "Cd74", "S100a8", "Srgn"),
+  Stromal = c("Col1a1", "Col1a2", "Dcn", "Pdgfra"),
+  Goblet = c("Tff2", "Muc5b"),
+  Ionocyte = c("Cftr", "Foxi1"),
+  Neuronal_Contam = c(
+    "Myt1l", "Tubb3", "Gap43", "Ebf1",
+    "Ebf2", "Lhx2", "Sox11", "Bach2"
+  )
+)
+
+
+
+```
+
+# Read, label, and remove the original Bowman’s/Tuft-MV clusters
+
+These labels come from the lineage-stage resolution-0.6 clustering.
+
+```{r small-group-cleaning}
+# Load the lineage object and remove small contaminating groups before reclustering.
+if (exists("filtered_seurat_lineageb")) {
+  lineage <- filtered_seurat_lineageb
+} else {
+  lineage <- readRDS(input_rds)
+}
+
+cluster_map <- c(
+  "0" = "iOSN 2",
+  "1" = "mOSN 3",
+  "2" = "mOSN 1",
+  "3" = "iOSN 3",
+  "4" = "mOSN 2",
+  "5" = "iOSN 1",
+  "6" = "late INP",
+  "7" = "GBC",
+  "8" = "Sus",
+  "9" = "HBC",
+  "10" = "early INP",
+  "11" = "MV",
+  "12" = "Bowmans",
+  "13" = "Tuft MV"
+)
+
+lineage$cluster_name <- unname(
+  cluster_map[as.character(lineage$RNA_snn_res.0.6)]
+)
+lineage$lineage_cluster_name <- lineage$cluster_name
+
+if (anyNA(lineage$cluster_name)) {
+  stop("At least one RNA_snn_res.0.6 cluster was not present in cluster_map.")
+}
+
+print(
+  DimPlot(
+    lineage,
+    reduction = "umap",
+    group.by = "cluster_name",
+    label = TRUE,
+    repel = TRUE
+  )
+)
+
+small_groups <- c("Bowmans", "Tuft MV")
+lineage$small_group_status <- ifelse(
+  lineage$cluster_name %in% small_groups,
+  "Removed",
+  "Retained"
+)
+
+print(
+  DimPlot(
+    lineage,
+    reduction = "umap",
+    group.by = "small_group_status"
+  ) +
+    scale_color_manual(
+      values = c(Removed = "grey75", Retained = "#1b9e77")
+    )
+)
+
+lineage_no_small_groups <- subset(
+  lineage,
+  subset = !(cluster_name %in% small_groups)
+)
+
+
+```
+
+# First processing pass and high-resolution cluster-57 identification
+
+```{r first-processing-pass}
+# Run the first processing pass and label cell states from marker scores.
+first_pass_drop_cols <- grep(
+  "^(RNA_snn_res\\.|score_|offscore_)",
+  colnames(lineage_no_small_groups@meta.data),
+  value = TRUE
+)
+
+lineage_for_reclustering <- lineage_no_small_groups
+lineage_for_reclustering@meta.data <-
+  lineage_for_reclustering@meta.data[
+    ,
+    setdiff(
+      colnames(lineage_for_reclustering@meta.data),
+      first_pass_drop_cols
+    ),
+    drop = FALSE
+  ]
+
+rm(lineage_no_small_groups)
+invisible(gc())
+
+lineage_reclustered <- process_lineage_object(
+  lineage_for_reclustering,
+  resolutions =c(0.3, 0.4, 0.5, 4)
+)
+lineage_reclustered <- add_umap3d(lineage_reclustered)
+lineage_reclustered <- score_and_label_lineage(lineage_reclustered)
+
+rm(lineage_for_reclustering)
+invisible(gc())
+
+cluster_selection_summary <- lineage_reclustered@meta.data %>%
+  mutate(cluster_id = as.character(RNA_snn_res.4)) %>%
+  group_by(cluster_id) %>%
+  summarise(
+    n_cells = n(),
+    frac_sus = mean(refined_celltype == "Sus", na.rm = TRUE),
+    frac_iOSN = mean(refined_celltype == "iOSN", na.rm = TRUE),
+    frac_mOSN = mean(refined_celltype == "mOSN", na.rm = TRUE),
+    frac_INP = mean(refined_celltype == "INP", na.rm = TRUE),
+    mean_neuronal_contam = mean(
+      offscore_Neuronal_Contam,
+      na.rm = TRUE
+    ),
+    median_neuronal_contam = median(
+      offscore_Neuronal_Contam,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  filter(frac_sus >= 0.5) %>%
+  arrange(
+    desc(mean_neuronal_contam),
+    desc(frac_sus),
+    desc(n_cells)
+  )
+
+print(cluster_selection_summary)
+selected_cluster_id <- cluster_selection_summary$cluster_id[1]
+
+if (!identical(selected_cluster_id, "57")) {
+  stop(
+    "Expected high-resolution cluster 57, but selected cluster ",
+    selected_cluster_id,
+    "."
+  )
+}
+
+cluster57_n <- sum(
+  as.character(lineage_reclustered$RNA_snn_res.4) ==
+    selected_cluster_id
+)
+stopifnot(cluster57_n == 394L)
+```
+
+# Plot and remove the neuronal-like Sus cluster
+
+```{r neuronal-like-removal, fig.width=10, fig.height=4}
+# Remove the neuronal-like cluster before the final processing pass.
+lineage_reclustered$neuronlike_status <- ifelse(
+  as.character(lineage_reclustered$RNA_snn_res.4) ==
+    selected_cluster_id,
+  "Neuron-like Sus",
+  "Other cells"
+)
+
+highlight <- DimPlot(
+  lineage_reclustered,
+  reduction = "umap",
+  group.by = "neuronlike_status"
+) +
+  scale_color_manual(
+    values = c(
+      "Neuron-like Sus" = "#e41a1c",
+      "Other cells" = "grey80"
+    )
+  )
+
+score_umap <- FeaturePlot(
+  lineage_reclustered,
+  features = "offscore_Neuronal_Contam",
+  reduction = "umap",
+  order = TRUE
+)
+
+print(highlight | score_umap)
+
+# The comparison population is the original lineage-stage Sus annotation.
+sus_meta <- lineage_reclustered@meta.data %>%
+  filter(cluster_name == "Sus") %>%
+  mutate(
+    group = ifelse(
+      as.character(RNA_snn_res.4) == selected_cluster_id,
+      "Neuron-like cluster",
+      "Other Sus clusters"
+    ),
+    group = factor(
+      group,
+      levels = c("Neuron-like cluster", "Other Sus clusters")
+    )
+  )
+
+print(table(sus_meta$group))
+
+neuron_violin <- ggplot(
+  sus_meta,
+  aes(
+    x = group,
+    y = offscore_Neuronal_Contam,
+    fill = group
+  )
+) +
+  geom_violin(scale = "width", trim = FALSE, adjust = 1) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Neuron-like cluster" = "#e41a1c",
+      "Other Sus clusters" = "#80b1d3"
+    )
+  ) +
+  labs(x = NULL, y = "Neuronal module score") +
+  theme_classic() +
+  theme(legend.position = "none")
+
+print(neuron_violin)
+
+lineage_no57 <- subset(
+  lineage_reclustered,
+  subset = RNA_snn_res.4 != selected_cluster_id
+)
+
+stopifnot(ncol(lineage_no57) == 60943L)
+```
+
+# Count Sus cells before and after cluster-57 removal.
+
+```{r before-after-by-age, fig.width=10, fig.height=4}
+# Compare age composition before and after contaminant removal to document its effect.
+if (!"sample" %in% colnames(lineage_reclustered@meta.data)) {
+  lineage_reclustered$sample <- tolower(
+    sub(
+      "^.*?([Pp][0-9]+).*$",
+      "\\1",
+      as.character(lineage_reclustered$orig.ident)
+    )
+  )
+}
+lineage_no57$sample <- lineage_reclustered$sample[colnames(lineage_no57)]
+
+
+age_counts <- bind_rows(
+  summarise_sus(lineage_reclustered, "Before removal"),
+  summarise_sus(lineage_no57, "After removal")
+) %>%
+  mutate(
+    sample = factor(
+      sample,
+      levels = c("p1", "p3", "p5", "p8", "p15", "p22")
+    )
+  )
+
+sus_count_plot <- ggplot(
+  age_counts,
+  aes(sample, sus_cells, color = stage, group = stage)
+) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Sus cells", x = NULL, y = "Number of cells") +
+  theme_minimal()
+
+sus_percent_plot <- ggplot(
+  age_counts,
+  aes(sample, sus_percent, color = stage, group = stage)
+) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Sus percentage",
+    x = NULL,
+    y = "Percentage of cells"
+  ) +
+  theme_minimal()
+
+print(sus_count_plot | sus_percent_plot)
+
+write.csv(
+  age_counts,
+  file.path(marker_output_dir, "sus_removal.csv"),
+  row.names = FALSE
+)
+```
+
+# Second processing pass and marker-based cleanup
+
+The first-pass clustering and scores must be discarded before the remaining
+60,943 cells are processed again. The second filter is based on the newly
+calculated `refined_celltype`; it is not based on a cluster numbered 12.
+
+```{r second-processing-pass}
+# Run the second processing pass and create the labels used by Slingshot.
+second_pass_drop_cols <- unique(c(
+  grep(
+    "^(RNA_snn_res\\.|score_|offscore_)",
+    colnames(lineage_no57@meta.data),
+    value = TRUE
+  ),
+  "refined_celltype",
+  "refined_celltype_score",
+  "refined_celltype_gap",
+  "broad_clusters",
+  "small_group_status",
+  "neuronlike_status"
+))
+second_pass_drop_cols <- intersect(
+  second_pass_drop_cols,
+  colnames(lineage_no57@meta.data)
+)
+
+lineage_no57@meta.data <- lineage_no57@meta.data[
+  ,
+  setdiff(colnames(lineage_no57@meta.data), second_pass_drop_cols),
+  drop = FALSE
+]
+
+rm(lineage_reclustered, sus_meta)
+invisible(gc())
+
+lineage_reprocessed <- process_lineage_object(
+  lineage_no57,
+  resolutions = c(0.4, 4.0)
+)
+lineage_reprocessed <- add_umap3d(lineage_reprocessed)
+lineage_reprocessed <- score_and_label_lineage(lineage_reprocessed)
+
+rm(lineage_no57)
+invisible(gc())
+
+stopifnot(ncol(lineage_reprocessed) == 60943L)
+
+secondary_exclusion_flag <-
+  lineage_reprocessed$refined_celltype %in% c("Bowmans", "Tuft_MV")
+
+secondary_exclusion_counts <- table(
+  factor(
+    lineage_reprocessed$refined_celltype[secondary_exclusion_flag],
+    levels = c("Bowmans", "Tuft_MV")
+  )
+)
+
+print(secondary_exclusion_counts)
+
+expected_secondary_exclusions <- c(Bowmans = 664L, Tuft_MV = 14L)
+if (!identical(
+  as.integer(secondary_exclusion_counts),
+  as.integer(expected_secondary_exclusions)
+)) {
+  stop(
+    "Unexpected secondary exclusions. Expected Bowmans=664 and ",
+    "Tuft_MV=14; observed ",
+    paste(
+      names(secondary_exclusion_counts),
+      as.integer(secondary_exclusion_counts),
+      sep = "=",
+      collapse = ", "
+    ),
+    "."
+  )
+}
+
+trajectory_cells <- colnames(lineage_reprocessed)[
+  !secondary_exclusion_flag
+]
+lineage_clean <- subset(
+  lineage_reprocessed,
+  cells = trajectory_cells
+)
+
+stopifnot(sum(secondary_exclusion_flag) == 678L)
+stopifnot(ncol(lineage_clean) == 60265L)
+
+# Preserve the original detailed lineage labels and the new marker-based broad
+# labels needed by the downstream Slingshot analysis.
+stopifnot("cluster_name" %in% colnames(lineage_clean@meta.data))
+stopifnot("lineage_cluster_name" %in% colnames(lineage_clean@meta.data))
+stopifnot("broad_clusters" %in% colnames(lineage_clean@meta.data))
+```
+
+
+
+```{r save, cache=FALSE}
+# Save the trajectory-ready lineage object and summaries when output writing is enabled.
+if (isTRUE(params$save_outputs)) {
+  saveRDS(lineage_clean, output_rds)
+  cat(
+    "Saved", ncol(lineage_clean), "cells and", nrow(lineage_clean),
+    "genes to:\n", output_rds, "\n"
+  )
+}
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this lineage-cleaning run.
+sessionInfo()
+```

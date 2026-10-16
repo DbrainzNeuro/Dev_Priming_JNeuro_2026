@@ -1,0 +1,379 @@
+---
+title: "Run Slingshot on PCs 1 to 5 from the 60,265-cell cleaned lineage"
+author: "Dana Bakalar"
+date: "2026-10-14"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  output_dir: "results"
+  save_outputs: true
+---
+
+The cleaned Seurat object is converted to a SingleCellExperiment, and Slingshot
+is run using `lineage_cluster_name`. The resulting object is saved for tradeSeq
+and used to draw the rotated 3D trajectory figure.
+
+```{r setup, include=FALSE, cache=FALSE}
+# Load the trajectory and plotting packages and define the user-controlled paths.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  ),
+  fig.width = 8,
+  fig.height = 5.25,
+  dpi = 150
+)
+
+options(rgl.useNULL = TRUE)
+
+input_path <- file.path(params$download_dir, "cleaned_for_slingshot_60265.rds")
+
+output_root <- here::here()
+publication_dir <- dirname(normalizePath(knitr::current_input(), winslash = "/", mustWork = TRUE))
+
+results_objects_dir <- params$output_dir
+plot_dir <- file.path(
+  params$output_dir, "plots", "branch_03_slingshot_tradeseq",
+  "09_plot_slingshot"
+)
+projection_dir <- file.path(publication_dir, "assets")
+
+dir.create(results_objects_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(SingleCellExperiment)
+  library(slingshot)
+  library(ggplot2)
+  library(ggnewscale)
+})
+
+source(file.path(publication_dir, "publication_helpers.R"), local = TRUE)
+```
+
+## Read the cleaned Slingshot input
+
+```{r load-input}
+# Load the cleaned lineage object produced by notebook 06.
+# Use the in-memory cleaned lineage object when available; otherwise load it from disk.
+if (exists("lineage_clean")) {
+  seu_orig <- lineage_clean
+} else {
+  seu_orig <- readRDS(input_path)
+}
+cell_ids <- colnames(seu_orig)
+metadata <- seu_orig[[]][cell_ids, , drop = FALSE]
+
+fine_label_column <- "lineage_cluster_name"
+fine_labels <- as.character(metadata$lineage_cluster_name)
+full_pca <- SeuratObject::Embeddings(seu_orig, "pca")[cell_ids, , drop = FALSE]
+
+cluster_counts <- sort(table(fine_labels), decreasing = TRUE)
+cluster_counts
+```
+
+## Build the SCE and run Slingshot on PCs 1--5
+
+The `lineage_cluster_name` column is copied into both `cluster_name` and
+`clustering` in the SCE. Slingshot receives those fine labels directly through
+`clusterLabels`.
+
+```{r run-slingshot}
+# Run Slingshot with PCs 1--5, GBC as the start, and HBC, Sus, and MV as endpoints.
+counts_mat <- get_assay_matrix(seu_orig, "RNA", "counts")
+logcounts_mat <- get_assay_matrix(seu_orig, "RNA", "data")
+
+counts_mat <- counts_mat[, cell_ids, drop = FALSE]
+logcounts_mat <- logcounts_mat[, cell_ids, drop = FALSE]
+
+sce_lineage <- SingleCellExperiment::SingleCellExperiment(
+  assays = list(
+    counts = counts_mat,
+    logcounts = logcounts_mat
+  ),
+  colData = S4Vectors::DataFrame(
+    clustering = as.character(fine_labels),
+    cluster_name = as.character(fine_labels),
+    row.names = cell_ids
+  ),
+  reducedDims = S4Vectors::SimpleList(
+    PCA = full_pca,
+    PCA_1_5 = full_pca[, 1:5, drop = FALSE]
+  )
+)
+
+if ("umap3d" %in% names(seu_orig@reductions)) {
+  SingleCellExperiment::reducedDim(sce_lineage, "UMAP3D") <-
+    SeuratObject::Embeddings(seu_orig, "umap3d")[cell_ids, 1:3, drop = FALSE]
+}
+
+set.seed(12345)
+sce_lineage <- slingshot::slingshot(
+  sce_lineage,
+  clusterLabels = "cluster_name",
+  reducedDim = "PCA_1_5",
+  start.clus = "GBC",
+  end.clus = c("HBC", "Sus", "MV")
+)
+
+lineage_summary <- lineage_table(sce_lineage)
+lineage_summary
+```
+
+## Use an existing in-memory SCE
+
+This section summarizes an existing `sce_lineage` object.
+
+```{r existing-sce}
+# Inspect fitted lineages and pseudotime ranges before plotting or saving them.
+cell_ids <- colnames(sce_lineage)
+fine_labels <- as.character(
+  SummarizedExperiment::colData(sce_lineage)$cluster_name
+)
+lineage_summary <- lineage_table(sce_lineage)
+pseudotime <- as.data.frame(slingshot::slingPseudotime(sce_lineage))
+curve_weights <- as.data.frame(slingshot::slingCurveWeights(sce_lineage))
+```
+
+## Save the Slingshot object
+
+tradeSeq consumes the fitted SCE's pseudotime and curve-weight matrices. The
+The fitted SCE contains the pseudotime and curve-weight matrices used by tradeSeq.
+
+```{r save-results, cache=FALSE}
+# Save the Slingshot object for downstream plotting when output writing is enabled.
+if (isTRUE(params$save_outputs)) {
+  saveRDS(sce_lineage, file.path(results_objects_dir, "slingshot_output.rds"))
+}
+
+
+pseudotime <- as.data.frame(slingshot::slingPseudotime(sce_lineage))
+curve_weights <- as.data.frame(slingshot::slingCurveWeights(sce_lineage))
+
+```
+
+## Project the exact saved rotated 3D view
+
+These three files preserve the coordinates, camera rotation, and embedded
+Slingshot curves used for the rotated supplement figure. Keeping them fixed
+prevents a new UMAP or a different camera state from changing the figure.
+
+```{r rotated-view}
+# Load the saved 3D view used for the trajectory figure.
+sce_lineage <- lineage_clean
+cell_ids <- colnames(lineage_clean)
+
+coordinates_path <- file.path(
+  projection_dir,
+  "04_slingshot_rgl_coordinates.rds"
+)
+view_state_path <- file.path(
+  projection_dir,
+  "04_slingshot_rgl_view_state.rds"
+)
+curves_path <- file.path(
+  projection_dir,
+  "04_slingshot_umap_curves_pcs1_to5_april13.rds"
+)
+
+projection_files <- c(
+  coordinates_path,
+  view_state_path,
+  curves_path
+)
+
+if (!all(file.exists(projection_files))) {
+  stop(
+    "Missing projection file: ",
+    paste(projection_files[!file.exists(projection_files)], collapse = "; ")
+  )
+}
+
+rgl_coordinates <- readRDS(coordinates_path)
+saved_view <- readRDS(view_state_path)
+saved_curve_ordering <- readRDS(curves_path)
+
+if (is.null(rownames(rgl_coordinates))) {
+  stop("The saved 3D coordinates have no cell names.")
+}
+
+missing_cells <- setdiff(
+  cell_ids,
+  rownames(rgl_coordinates)
+)
+
+if (length(missing_cells) > 0) {
+  stop(
+    "lineage_clean does not contain the same cells as the saved 3D coordinates. ",
+    "Missing coordinate rows: ",
+    length(missing_cells)
+  )
+}
+
+rgl_coordinates <- rgl_coordinates[
+  cell_ids,
+  1:3,
+  drop = FALSE
+]
+rgl::open3d(useNULL = TRUE)
+rgl::plot3d(
+  rgl_coordinates[, 1], rgl_coordinates[, 2], rgl_coordinates[, 3],
+  type = "n", axes = FALSE, box = FALSE,
+  xlab = "", ylab = "", zlab = ""
+)
+rgl::par3d(
+  userMatrix = saved_view$userMatrix,
+  zoom = saved_view$zoom,
+  FOV = saved_view$FOV,
+  scale = saved_view$scale
+)
+
+projected_cells <- project_rgl_view(rgl_coordinates)
+
+celltype_palette <- c(
+  "mOSN 3" = "#EF7677",
+  "mOSN 2" = "#E94849",
+  "mOSN 1" = "#E41A1C",
+  "iOSN 3" = "#87B2D4",
+  "iOSN 2" = "#5F98C6",
+  "iOSN 1" = "#377EB8",
+  "late INP" = "#94CF92",
+  "early INP" = "#4DAF4A",
+  "GBC" = "#C195C8",
+  "Sus" = "#FFFF85",
+  "HBC" = "#CA9A7E",
+  "MV" = "#FFB266"
+)
+unmapped_cell_types <- setdiff(unique(fine_labels), names(celltype_palette))
+if (length(unmapped_cell_types) > 0) {
+  celltype_palette <- c(
+    celltype_palette,
+    stats::setNames(scales::hue_pal()(length(unmapped_cell_types)), unmapped_cell_types)
+  )
+}
+
+cell_plot_data <- data.frame(
+  Dim_1 = projected_cells$Dim_1,
+  Dim_2 = projected_cells$Dim_2,
+  Cell_Type = factor(fine_labels, levels = names(celltype_palette)),
+  row.names = cell_ids
+)
+
+saved_curves <- slingshot::slingCurves(saved_curve_ordering)
+new_lineage_endpoints <- lineage_summary$endpoint
+if (length(saved_curves) != length(new_lineage_endpoints)) {
+  warning(
+    "The saved 3D curve count (", length(saved_curves),
+    ") differs from the newly fitted Slingshot lineage count (",
+    length(new_lineage_endpoints), "). Using saved curve numbering."
+  )
+}
+
+curve_plot_data <- do.call(
+  rbind,
+  lapply(seq_along(saved_curves), function(index) {
+    curve <- saved_curves[[index]]
+    curve_xyz <- curve$s[curve$ord, 1:3, drop = FALSE]
+    curve_xy <- project_rgl_view(curve_xyz)
+    endpoint <- if (index <= length(new_lineage_endpoints)) {
+      new_lineage_endpoints[[index]]
+    } else {
+      paste0("Lineage_", index)
+    }
+    data.frame(
+      Dim_1 = curve_xy$Dim_1,
+      Dim_2 = curve_xy$Dim_2,
+      Lineage = endpoint,
+      Point_Order = seq_len(nrow(curve_xy)),
+      stringsAsFactors = FALSE
+    )
+  })
+)
+
+lineage_levels <- unique(curve_plot_data$Lineage)
+curve_plot_data$Lineage <- factor(curve_plot_data$Lineage, levels = lineage_levels)
+neuronal_endpoints <- lineage_levels[grepl("^mOSN", lineage_levels)]
+lineage_palette <- c(
+  stats::setNames(rep("#642C9B", length(neuronal_endpoints)), neuronal_endpoints),
+  "Sus" = "#278ABD",
+  "HBC" = "#11A189",
+  "MV" = "#DA6004"
+)
+unmapped_lineages <- setdiff(lineage_levels, names(lineage_palette))
+if (length(unmapped_lineages) > 0) {
+  lineage_palette <- c(
+    lineage_palette,
+    stats::setNames(scales::hue_pal(l = 45)(length(unmapped_lineages)), unmapped_lineages)
+  )
+}
+rgl::close3d()
+```
+
+## Rotated Slingshot figure
+
+```{r rotated-slingshot-plot}
+# Project the fitted 3D curves and assemble the published rotated Slingshot plot.
+rotated_slingshot_plot <- ggplot() +
+  geom_point(
+    data = cell_plot_data,
+    aes(x = Dim_1, y = Dim_2, color = Cell_Type),
+    size = 0.45,
+    alpha = 0.65
+  ) +
+  scale_color_manual(
+    values = celltype_palette,
+    name = "Cell Type:",
+    drop = FALSE,
+    guide = guide_legend(order = 1)
+  ) +
+  ggnewscale::new_scale_color() +
+  geom_path(
+    data = curve_plot_data,
+    aes(x = Dim_1, y = Dim_2, group = Lineage, color = Lineage),
+    linewidth = 1.05,
+    lineend = "round"
+  ) +
+  scale_color_manual(
+    values = lineage_palette,
+    name = "Lineage:",
+    drop = FALSE,
+    guide = guide_legend(order = 2)
+  ) +
+  coord_fixed() +
+  theme_void(base_size = 10) +
+  theme(
+    legend.position = "left",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9),
+    legend.key.height = grid::unit(0.38, "cm"),
+    plot.margin = margin(5.5, 5.5, 5.5, 5.5),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA)
+  ) +
+  guides(color = guide_legend(override.aes = list(linewidth = 1.5)))
+
+plot_base <- file.path(plot_dir, "trajec_umap_flat_rotated_pc1to5")
+rotated_slingshot_plot
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this Slingshot run.
+sessionInfo()
+```

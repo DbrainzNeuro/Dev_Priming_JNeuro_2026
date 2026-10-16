@@ -1,0 +1,532 @@
+---
+title: "Incoming CellChat signaling to GBCs at p5 and p22"
+author: "Dana Bakalar"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: paged
+params:
+  data_dir: "data"
+  save_outputs: true
+  receiver: "GBC"
+  early_age: "p5"
+  late_age: "p22"
+  top_n_senders: 6
+  top_n_pathways: 8
+  use_exported_tables: false
+---
+
+## Purpose
+
+This analysis compares incoming CellChat signaling to GBCs at p5 and p22. It:
+
+1. extracts every inferred ligand-receptor interaction received by GBCs;
+2. summarizes interaction counts and summed CellChat probabilities by sender;
+3. calculates the p5-minus-p22 change in pathway strength for each sender;
+4. produces the focused six-sender figure and the all-sender companion figure;
+5. exports the plotted tables and PNG and PDF files.
+
+
+```{r setup, include=FALSE, cache=FALSE}
+# Load only the packages and shared helpers needed for the CellChat summaries and plots.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  cache = FALSE,
+  fig.align = "center",
+  dpi = 150
+)
+
+suppressPackageStartupMessages({
+  library(CellChat)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(patchwork)
+  library(scales)
+})
+
+data_dir <- normalizePath(params$data_dir, winslash = "/", mustWork = TRUE)
+
+early_age <- params$early_age
+late_age <- params$late_age
+comparison_ages <- c(early_age, late_age)
+receiver <- params$receiver
+
+sender_palette <- c(
+  "mOSN" = "#a65628",
+  "iOSN" = "#bc9dcc",
+  "Sustentacular" = "#b2df8a",
+  "Fibroblasts" = "#984ea3",
+  "GBC" = "#f29403",
+  "INP" = "#66c2a5",
+  "HBC" = "#377eb8",
+  "Respiratory_Basal" = "#4daf4a",
+  "Inflammatory_Monocyte_like" = "#d62728",
+  "Microvillus" = "#1b9e77",
+  "Respiratory_Goblet" = "#f781bf",
+  "OEC" = "#17becf",
+  "Macrophage_like" = "#8c564b"
+)
+
+age_palette <- c(
+  "p5" = "#2c7fb8",
+  "p22" = "#9ecae1"
+)
+
+# Functions used to load, summarize, and plot the CellChat object.
+format_sender_label <- function(x) {
+  gsub("_", " ", x, fixed = TRUE)
+}
+
+load_cellchat_list <- function(path) {
+  env <- new.env(parent = baseenv())
+  loaded_names <- load(path, envir = env)
+  preferred_names <- c("object.list", "obj.list")
+  object_name <- preferred_names[preferred_names %in% loaded_names][1]
+  if (is.na(object_name)) {
+    stop("The RData file does not contain `object.list` or `obj.list`. Found: ",
+         paste(loaded_names, collapse = ", "))
+  }
+  object_list <- get(object_name, envir = env, inherits = FALSE)
+  if (!is.list(object_list)) stop("Loaded object `", object_name, "` is not a list.")
+  object_list
+}
+
+get_incoming_lr <- function(cellchat, dataset_name, receiver_name) {
+  CellChat::subsetCommunication(cellchat, slot.name = "net") %>%
+    filter(target == receiver_name) %>%
+    transmute(
+      dataset = dataset_name,
+      sender = as.character(source),
+      receiver = as.character(target),
+      pathway_name = as.character(pathway_name),
+      ligand = as.character(ligand),
+      receptor = as.character(receptor),
+      prob = as.numeric(prob)
+    )
+}
+
+get_incoming_pathways <- function(cellchat, dataset_name, receiver_name) {
+  CellChat::subsetCommunication(cellchat, slot.name = "netP") %>%
+    filter(target == receiver_name) %>%
+    transmute(
+      dataset = dataset_name,
+      sender = as.character(source),
+      receiver = as.character(target),
+      pathway_name = as.character(pathway_name),
+      prob = as.numeric(prob)
+    )
+}
+
+make_sender_pathway_panel <- function(sender_name, add_panel_tag = FALSE) {
+  panel_data <- focused_pathways %>%
+    filter(sender == sender_name) %>%
+    arrange(desc(abs_delta), pathway_name) %>%
+    slice_head(n = params$top_n_pathways) %>%
+    mutate(pathway_name = factor(pathway_name, levels = rev(pathway_name)))
+  sender_color <- sender_palette[[sender_name]]
+  if (is.null(sender_color) || is.na(sender_color)) sender_color <- "#555555"
+  ggplot(panel_data, aes(x = delta_p5_minus_p22, y = pathway_name)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey70", linewidth = 0.35) +
+    geom_point(aes(size = abs_delta), color = sender_color, alpha = 0.95) +
+    scale_size(range = c(1.5, 4.3), guide = "none") +
+    scale_x_continuous(
+      limits = c(-pathway_x_limit, pathway_x_limit),
+      breaks = breaks_pretty(n = 3),
+      labels = label_number(accuracy = 0.001)
+    ) +
+    labs(
+      title = format_sender_label(sender_name), x = NULL, y = NULL,
+      tag = if (add_panel_tag) "B" else NULL
+    ) +
+    theme_classic(base_size = 8) +
+    theme(
+      plot.title = element_text(size = 9.5, face = "bold", hjust = 0.5),
+      plot.tag = element_text(size = 11, face = "bold"),
+      plot.tag.position = c(0.01, 1.10),
+      axis.text.x = element_text(size = 6.5),
+      axis.text.y = element_text(size = 7.2),
+      axis.ticks.y = element_blank(),
+      plot.margin = margin(4, 7, 4, 7)
+    )
+}
+
+```
+
+## Input object
+
+Place `cellchat_input.RData` in the repository's `data/` folder. All
+generated tables and figures are written back to that same folder.
+
+```{r locate-input}
+# Locate the CellChat input object.
+cellchat_object_path <- normalizePath(
+  file.path(data_dir, "cellchat_input.RData"),
+  winslash = "/", mustWork = TRUE
+)
+
+cat("CellChat input: cellchat_input.RData\n")
+cat("Output directory:", data_dir, "\n")
+```
+
+```{r load-object, eval=!isTRUE(params$use_exported_tables)}
+# Load the per-age CellChat object list and retain p5 and p22.
+object_list <- load_cellchat_list(cellchat_object_path)
+object_list <- object_list[comparison_ages]
+cat("Analyzing:", paste(names(object_list), collapse = ", "), "\n")
+```
+
+## Extract incoming GBC communication
+
+`n_links` is the number of significant ligand-receptor rows returned by
+`CellChat::subsetCommunication(..., slot.name = "net")`. `total_weight` is
+the sum of their CellChat probabilities. Pathway probabilities come from the
+`netP` slot and are summed within sender, age, and pathway.
+
+```{r extract-communication, eval=!isTRUE(params$use_exported_tables)}
+# Extract ligand-receptor and pathway communication received by GBCs at each age.
+incoming_lr <- bind_rows(lapply(names(object_list), function(age) {
+  get_incoming_lr(object_list[[age]], age, receiver)
+}))
+
+incoming_pathways <- bind_rows(lapply(names(object_list), function(age) {
+  get_incoming_pathways(object_list[[age]], age, receiver)
+}))
+```
+
+```{r summarize-communication}
+# Summarize incoming interaction counts, total probabilities, and pathway changes by sender.
+if (isTRUE(params$use_exported_tables)) {
+  cache_files <- c(
+    incoming = file.path(data_dir, "cellchat_incoming.csv"),
+    sender = file.path(data_dir, "cellchat_senders.csv"),
+    pathway = file.path(data_dir, "cellchat_pathways.csv")
+  )
+  incoming_by_sender <- read.csv(cache_files[["incoming"]], stringsAsFactors = FALSE)
+  sender_summary_wide <- read.csv(cache_files[["sender"]], stringsAsFactors = FALSE)
+  pathway_delta <- read.csv(cache_files[["pathway"]], stringsAsFactors = FALSE)
+} else {
+  all_senders <- sort(unique(incoming_lr$sender))
+
+  incoming_by_sender <- incoming_lr %>%
+    group_by(dataset, sender) %>%
+    summarise(
+      total_weight = sum(prob, na.rm = TRUE),
+      n_links = dplyr::n(),
+      .groups = "drop"
+    ) %>%
+    complete(
+      dataset = comparison_ages,
+      sender = all_senders,
+      fill = list(total_weight = 0, n_links = 0)
+    )
+
+  pathway_delta <- incoming_pathways %>%
+    group_by(dataset, sender, pathway_name) %>%
+    summarise(total_prob = sum(prob, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(
+      names_from = dataset,
+      values_from = total_prob,
+      values_fill = 0
+    ) %>%
+    mutate(
+      prob_early = .data[[early_age]],
+      prob_late = .data[[late_age]],
+      delta_p5_minus_p22 = prob_early - prob_late,
+      abs_delta = abs(delta_p5_minus_p22)
+    )
+
+  sender_summary_wide <- incoming_by_sender %>%
+    pivot_wider(
+      names_from = dataset,
+      values_from = c(total_weight, n_links),
+      values_fill = 0
+    ) %>%
+    mutate(
+      early_weight = .data[[paste0("total_weight_", early_age)]],
+      late_weight = .data[[paste0("total_weight_", late_age)]],
+      early_links = .data[[paste0("n_links_", early_age)]],
+      late_links = .data[[paste0("n_links_", late_age)]],
+      delta_weight_p5_minus_p22 = early_weight - late_weight,
+      percent_drop_p5_to_p22 = if_else(
+        early_weight > 0,
+        100 * delta_weight_p5_minus_p22 / early_weight,
+        NA_real_
+      )
+    ) %>%
+    arrange(desc(early_weight), desc(early_links), sender)
+}
+
+sender_order <- sender_summary_wide$sender
+selected_senders <- head(sender_order, params$top_n_senders)
+
+stopifnot(length(selected_senders) == params$top_n_senders)
+
+cat("Focused sender order:", paste(format_sender_label(selected_senders), collapse = ", "), "\n")
+```
+
+```{r export-tables, cache=FALSE}
+# Save the three plotted data tables.
+if (isTRUE(params$save_outputs)) {
+  write.csv(
+    incoming_by_sender,
+    file.path(data_dir, "cellchat_incoming.csv"),
+    row.names = FALSE
+  )
+  write.csv(
+    sender_summary_wide,
+    file.path(data_dir, "cellchat_senders.csv"),
+    row.names = FALSE
+  )
+  write.csv(
+    pathway_delta,
+    file.path(data_dir, "cellchat_pathways.csv"),
+    row.names = FALSE
+  )
+}
+```
+
+## Focused six-sender figure
+
+Senders are ranked by p5 summed interaction strength, matching the current
+figure. Positive pathway deltas are stronger at p5; negative values are
+stronger at p22.
+
+```{r build-focused-figure}
+# Build the focused count, strength, and pathway panels.
+focused_age_levels <- c(late_age, early_age)
+
+incoming_focused <- incoming_by_sender %>%
+  filter(sender %in% selected_senders) %>%
+  mutate(
+    dataset = factor(dataset, levels = focused_age_levels),
+    sender = factor(sender, levels = selected_senders),
+    sender_display = factor(
+      format_sender_label(as.character(sender)),
+      levels = format_sender_label(selected_senders)
+    )
+  )
+
+focused_age_palette <- age_palette[focused_age_levels]
+
+focused_theme <- theme_classic(base_size = 9) +
+  theme(
+    plot.title = element_text(size = 10, hjust = 0.5, lineheight = 0.95),
+    axis.title = element_text(size = 9),
+    axis.text.x = element_text(size = 7.5, angle = 50, hjust = 1, vjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.title = element_text(size = 8.5),
+    legend.text = element_text(size = 8),
+    legend.key.size = grid::unit(0.16, "in"),
+    plot.margin = margin(4, 5, 3, 4)
+  )
+
+count_plot <- ggplot(
+  incoming_focused,
+  aes(x = sender_display, y = n_links, fill = dataset)
+) +
+  geom_col(position = position_dodge(width = 0.72), width = 0.62) +
+  scale_fill_manual(values = focused_age_palette, name = "Age") +
+  labs(
+    title = "Inferred incoming\ninteractions to GBCs",
+    x = "Sender",
+    y = "Number interactions",
+    tag = "A"
+  ) +
+  focused_theme +
+  theme(
+    plot.tag = element_text(size = 11, face = "bold"),
+    plot.tag.position = c(0.01, 0.99)
+  )
+
+weight_plot <- ggplot(
+  incoming_focused,
+  aes(x = sender_display, y = total_weight, fill = dataset)
+) +
+  geom_col(position = position_dodge(width = 0.72), width = 0.62) +
+  scale_fill_manual(values = focused_age_palette, name = "Age") +
+  scale_y_continuous(labels = label_number(accuracy = 0.001)) +
+  labs(
+    title = "Inferred interaction\nstrength to GBCs",
+    x = "Sender",
+    y = "Summed probability"
+  ) +
+  focused_theme
+
+focused_pathways <- pathway_delta %>%
+  filter(sender %in% selected_senders)
+
+pathway_x_limit <- max(abs(focused_pathways$delta_p5_minus_p22), na.rm = TRUE) * 1.08
+if (!is.finite(pathway_x_limit) || pathway_x_limit == 0) pathway_x_limit <- 1
+
+
+pathway_panels <- lapply(seq_along(selected_senders), function(i) {
+  make_sender_pathway_panel(selected_senders[[i]], add_panel_tag = i == 1)
+})
+
+focused_top_row <- (count_plot | weight_plot) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "top")
+
+focused_bottom_grid <- wrap_plots(pathway_panels, ncol = 3)
+
+focused_figure <- focused_top_row / focused_bottom_grid +
+  plot_layout(heights = c(0.92, 1.12))
+```
+
+```{r show-focused-figure, echo=FALSE, fig.width=6.5, fig.height=7.8, out.width='85%'}
+# Print the focused six-sender figure inline.
+focused_figure
+```
+
+```{r save-focused-figure, cache=FALSE}
+# Save the focused figure.
+focused_png <- file.path(data_dir, "cellchat_top6.png")
+focused_pdf <- file.path(data_dir, "cellchat_top6.pdf")
+
+if (isTRUE(params$save_outputs)) {
+  ggsave(focused_png, focused_figure, width = 6.5, height = 7.8, units = "in", dpi = 300)
+  ggsave(focused_pdf, focused_figure, width = 6.5, height = 7.8, units = "in")
+}
+```
+
+## All analyzed sender classes
+
+This companion panel retains every sender present in both comparison inputs.
+The sender order is the same p5-strength ranking used to choose the focused
+six-sender subset.
+
+```{r build-all-sender-figure}
+# Build the companion count and strength panels for every analyzed sender class.
+all_sender_data <- incoming_by_sender %>%
+  mutate(
+    dataset = factor(dataset, levels = c(early_age, late_age)),
+    sender = factor(sender, levels = rev(sender_order)),
+    sender_display = factor(
+      format_sender_label(as.character(sender)),
+      levels = rev(format_sender_label(sender_order))
+    )
+  )
+
+all_age_palette <- age_palette[c(early_age, late_age)]
+
+all_count_plot <- ggplot(
+  all_sender_data,
+  aes(x = n_links, y = sender_display, fill = dataset)
+) +
+  geom_col(position = position_dodge(width = 0.72), width = 0.62) +
+  scale_fill_manual(values = all_age_palette, name = "Age") +
+  labs(
+    title = "Incoming inferred interactions to GBC",
+    x = "Number of inferred interactions",
+    y = "Analyzed sender class"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 9),
+    legend.position = "top"
+  )
+
+all_weight_plot <- ggplot(
+  all_sender_data,
+  aes(x = total_weight, y = sender_display, fill = dataset)
+) +
+  geom_col(position = position_dodge(width = 0.72), width = 0.62) +
+  scale_fill_manual(values = all_age_palette, name = "Age") +
+  scale_x_continuous(labels = label_number(accuracy = 0.001)) +
+  labs(
+    title = "Incoming interaction strength to GBC",
+    x = "Summed CellChat probability",
+    y = NULL
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+    axis.text.y = element_text(size = 9),
+    legend.position = "top"
+  )
+
+all_sender_figure <- (all_count_plot | all_weight_plot) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "top")
+```
+
+```{r show-all-sender-figure, echo=FALSE, fig.width=10, fig.height=5.8, out.width='100%'}
+# Print the all-sender companion figure inline.
+all_sender_figure
+```
+
+```{r save-all-sender-figure, cache=FALSE}
+# Save the all-sender figure.
+all_sender_png <- file.path(data_dir, "cellchat_all.png")
+all_sender_pdf <- file.path(data_dir, "cellchat_all.pdf")
+
+if (isTRUE(params$save_outputs)) {
+  ggsave(all_sender_png, all_sender_figure, width = 10, height = 5.8, units = "in", dpi = 300)
+  ggsave(all_sender_pdf, all_sender_figure, width = 10, height = 5.8, units = "in")
+}
+```
+
+## Values used in the figures
+
+```{r figure-values, echo=FALSE}
+# Display the sender-level values used in the figures.
+display_table <- sender_summary_wide %>%
+  transmute(
+    sender = format_sender_label(sender),
+    p5_links = early_links,
+    p22_links = late_links,
+    p5_probability = early_weight,
+    p22_probability = late_weight,
+    p5_minus_p22_probability = delta_weight_p5_minus_p22,
+    percent_drop_p5_to_p22
+  )
+
+knitr::kable(display_table, digits = 5)
+```
+
+## Output manifest
+
+```{r output-manifest, echo=FALSE, cache=FALSE}
+# List the generated tables and figures.
+manifest <- data.frame(
+  file = c(
+    basename(focused_png),
+    basename(focused_pdf),
+    basename(all_sender_png),
+    basename(all_sender_pdf),
+    "cellchat_incoming.csv",
+    "cellchat_senders.csv",
+    "cellchat_pathways.csv"
+  ),
+  description = c(
+    "Focused six-sender figure (PNG)",
+    "Focused six-sender figure (PDF)",
+    "All-sender figure (PNG)",
+    "All-sender figure (PDF)",
+    "Long sender-by-age summary",
+    "Wide p5/p22 sender summary",
+    "Sender-by-pathway p5-minus-p22 changes"
+  )
+)
+
+if (isTRUE(params$save_outputs)) {
+  write.csv(manifest, file.path(data_dir, "cellchat_manifest.csv"), row.names = FALSE)
+}
+knitr::kable(manifest)
+```
+
+## Reproducibility
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this CellChat analysis.
+sessionInfo()
+```
+
+

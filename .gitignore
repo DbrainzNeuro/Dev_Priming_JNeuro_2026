@@ -1,0 +1,38 @@
+# Local configuration
+config/pipeline_paths.yml
+
+# Analysis outputs and large generated artifacts
+results/
+tmp/
+dist/
+deck_work/
+
+# Rendered notebooks and figures
+*.html
+*.pdf
+*.png
+
+# Serialized analysis objects
+*.rds
+*.rda
+*.RData
+
+# Small fixed projection assets required by publication notebook 07
+!assets/*.rds
+
+# R session state
+.Rhistory
+.Rproj.user/
+.Ruserdata
+renv/library/
+renv/staging/
+renv/python/
+
+# Logs and checkpoints
+*.log
+*.out
+*.err
+
+# OS/editor noise
+Thumbs.db
+.DS_Store

@@ -1,0 +1,99 @@
+---
+title: "001_get_and_merge_H5_files"
+author: "Dana Bakalar"
+date: "2024-06-14"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  raw_h5_dir: "data/RawH5Files/Dev"
+  output_dir: "results"
+  save_outputs: true
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, cache=FALSE}
+# Load the packages needed to read, merge, and save the developmental 10x data.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  )
+)
+suppressPackageStartupMessages({
+library(Seurat)
+})
+```
+
+
+Get and process data from the specified directories
+```{r get-H5-files}
+# Read the developmental 10x H5 files.
+dev_base_dir <- params$raw_h5_dir
+dev_sample_dirs <- list.dirs(dev_base_dir, full.names = TRUE, recursive = FALSE)
+
+# Define the sample order.
+sample_order <- c(
+  "p1_F_2_counts", "p1_F_counts", "p1_M_2_counts", "p1_M_counts",
+  "p15_F_counts", "p15_R1_counts", "p22_F_2_counts", "p22_F_counts",
+  "p22_M_2_counts", "p22_M_counts", "p3_F_counts", "p3_M_counts",
+  "p5_R1_counts", "p5_R2_counts", "p8_M_counts", "p8_R1_counts"
+)
+dev_sample_dirs <- dev_sample_dirs[match(sample_order, basename(dev_sample_dirs))]
+
+# Match each sample name to its raw-count file.
+seurat_objects <- lapply(dev_sample_dirs, function(dir_path) {
+  sample_name <- basename(dir_path)
+
+  # Read the labeled raw-count file for this sample.
+  raw_h5_file <- file.path(dir_path, "outs", "raw_feature_bc_matrix.h5")
+  count_matrix <- Read10X_h5(raw_h5_file)
+
+  # Create one Seurat object per sample using the 100-feature minimum.
+  CreateSeuratObject(
+    counts = count_matrix,
+    min.features = 200,
+    project = sample_name
+  )
+})
+```
+
+
+```{r combine}
+# Combine the sample objects into the list that will be merged below.
+combined_seurat_objects <- c(seurat_objects)
+```
+
+
+```{r merge}
+# Merge every sample into the single Seurat object used by the QC notebook.
+seurat_objects_list <- unlist(combined_seurat_objects, recursive = FALSE)
+cell_ids <- names(seurat_objects_list)
+x <- seurat_objects_list[[1]]
+y <- seurat_objects_list[-1]
+merged_seurat <- merge(x = x, 
+                       y = y,
+                       add.cell.id = cell_ids)
+```
+
+
+```{r save_it, cache=FALSE}
+# Save the merged object.
+if (isTRUE(params$save_outputs)) {
+  saveRDS(merged_seurat, file.path(params$output_dir, "001_Dev_merged.rds"))
+}
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this raw-data merge.
+sessionInfo()
+```

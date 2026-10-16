@@ -1,0 +1,244 @@
+---
+title: "make_hbc_subset"
+author: "Dana Bakalar"
+date: "2026-03-20"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  download_dir: "data"
+  output_dir: "results"
+  save_outputs: true
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE, cache=FALSE}
+# Load the packages and shared helpers used to subset, cluster, and plot HBCs.
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  autodep = TRUE,
+  cache.comments = FALSE,
+  cache.path = file.path(
+    here::here("results", "cache", "publication_pipeline"),
+    paste0(tools::file_path_sans_ext(basename(knitr::current_input())), "/")
+  )
+)
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(SeuratExtend)
+  library(dplyr)
+  library(ggplot2)
+  library(patchwork)
+})
+publication_dir <- dirname(normalizePath(knitr::current_input(), winslash = "/", mustWork = TRUE))
+source(file.path(publication_dir, "publication_helpers.R"), local = TRUE)
+```
+
+```{r get_data}
+# Load the lineage object from notebook 03 when it is not already in memory.
+# Reuse the lineage object from notebook 03 during a full-session run.
+if (exists("filtered_seurat_lineageb")) {
+  filtered_seurat <- filtered_seurat_lineageb
+} else {
+  filtered_seurat <- readRDS(file.path(params$download_dir, "olfactory_lineage.rds"))
+}
+```
+
+
+
+```{r label-trp63-cells}
+# Label cells by Trp63 expression to locate the HBC population.
+trp63_expr <- FetchData(filtered_seurat, vars = "Trp63")
+filtered_seurat$trp63_status <- ifelse(trp63_expr$Trp63 > 2, "Trp63+", "Trp63-")
+
+DimPlot(filtered_seurat,
+        reduction = "umap",
+        group.by = "trp63_status",
+        cols = c("Trp63-" = "grey80", "Trp63+" = "red"),
+        pt.size = 0.5,
+        order = "Trp63+") +
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2") +
+  ggtitle("Trp63+ Cells") +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    legend.position = "right"
+  )
+
+DimPlot(filtered_seurat, reduction = "umap", group.by = "RNA_snn_res.0.6", label = TRUE)
+```
+
+```{r select-hbcs}
+# Select cluster 9 for HBC-specific analysis.
+hbc_subset <- subset(
+  filtered_seurat,
+  subset = (RNA_snn_res.0.6 == 9)
+)
+```
+
+```{r assess_resolutions}
+# Remove earlier clustering columns and reprocess the HBC subset.
+res_cols <- grep("_snn_res\\.", colnames(hbc_subset@meta.data), value = TRUE)
+hbc_subset@meta.data[res_cols] <- NULL
+
+hbc_subset <- process_seurat_object(hbc_subset, resolution.range = c(0.3, 0.4, 0.6, 0.8))
+```
+
+
+
+```{r plot_clusters}
+# Plot HBC clusters beside sample identity to inspect the selected resolution.
+b <- DimPlot(hbc_subset, reduction = "umap", group.by = "RNA_snn_res.0.3", label = TRUE)
+c <- DimPlot(hbc_subset, reduction = "umap", group.by = "sample", shuffle = TRUE)
+b | c
+```
+
+```{r cell_cycle_scores}
+# Score cell-cycle phase so quiescent and cycling HBC states can be compared.
+phase_analysis <- score_and_plot_cell_cycle(hbc_subset, cc_genes = cc.genes, reduction = "umap")
+phase_plot <- phase_analysis[["phase_plot"]] + theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2")
+phase_plot
+```
+```{r assign-hbc-groups, fig.width=6, fig.height=3}
+# Map HBC cluster numbers to broad groups and define their colors.
+
+total_cells_per_sample <- hbc_subset@meta.data %>%
+  group_by(sample) %>%
+  summarise(total_cells = n(), .groups = "drop")
+
+counts <- hbc_subset@meta.data %>%
+  group_by(sample, RNA_snn_res.0.3) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  ungroup()
+
+counts <- merge(counts, total_cells_per_sample, by = "sample")
+counts <- counts %>%
+  mutate(
+    cluster_name = as.character(RNA_snn_res.0.3),
+    broad_cluster = case_when(
+      cluster_name %in% c("3", "4", "5") ~ "cycling",
+      cluster_name %in% c("0", "1", "2") ~ "resting",
+      TRUE ~ NA_character_
+    ),
+    percentage = (count / total_cells) * 100
+  )
+
+counts <- counts %>%
+  mutate(
+    group_label = paste(broad_cluster, cluster_name, sep = "_"),
+    group_label = factor(group_label, levels = rev(sort(unique(group_label))))
+  )
+
+# Define the cycling and resting shade palette used by the HBC UMAP.
+base_colors <- c(cycling = "#d62728", resting = "#377eb8")
+
+group_colors <- c()
+for (bc in unique(counts$broad_cluster)) {
+  if (is.na(bc)) next
+  subclusters <- counts %>% filter(broad_cluster == bc) %>% pull(cluster_name) %>% unique() %>% sort()
+  shades <- generate_shades(base_colors[[bc]], length(subclusters))
+  names(shades) <- paste(bc, subclusters, sep = "_")
+  group_colors <- c(group_colors, shades)
+}
+
+
+# Match the figure: p1 at bottom and p22 at top
+age_order <- c("p1", "p3", "p5", "p8", "p15", "p22")
+
+# Match the figure legend:
+# resting HBCs = blues (0–2), cycling HBCs = reds (3–5)
+cluster_colors <- c(
+  "0" = "#B3CDE3",
+  "1" = "#6497D3",
+  "2" = "#084081",
+  "3" = "#FBB4AE",
+  "4" = "#EF3B2C",
+  "5" = "#7F0000"
+)
+
+hbc_counts <- hbc_subset@meta.data %>%
+  mutate(
+    age = tolower(as.character(sample)),
+    cluster = as.character(RNA_snn_res.0.3)
+  ) %>%
+  count(age, cluster, name = "count") %>%
+  group_by(age) %>%
+  mutate(percentage = 100 * count / sum(count)) %>%
+  ungroup() %>%
+  mutate(
+    age = factor(age, levels = age_order),
+    cluster = factor(cluster, levels = as.character(0:5))
+  )
+
+clust_membership <- ggplot(
+  hbc_counts,
+  aes(x = percentage, y = age, fill = cluster)
+) +
+  geom_col(
+    color = "white",
+    linewidth = 0.35
+  ) +
+  scale_fill_manual(
+    values = cluster_colors,
+    breaks = as.character(0:5),
+    drop = FALSE,
+    name = "Cluster"
+  ) +
+  scale_x_continuous(
+    limits = c(0, 100),
+    breaks = c(0, 25, 50, 75, 100),
+    labels = \(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "Percentage (%)",
+    y = "Age"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right"
+  )
+```
+
+```{r plot-hbc-clusters, fig.width=5, fig.height=5}
+# Plot the labeled HBC clusters with the established group colors.
+cluster_colors <- group_colors
+names(cluster_colors) <- sub("^.+?_", "", names(cluster_colors))
+
+umap_plot <- DimPlot(
+  hbc_subset,
+  reduction = "umap",
+  group.by = "RNA_snn_res.0.3",
+  cols = cluster_colors,
+  pt.size = 0.5,
+  label = TRUE,
+  label.size = 4
+) +
+  theme_umap_arrows(x_label = "UMAP_1", y_label = "UMAP_2") +
+  ggtitle("HBC Subclusters") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+```{r combine-hbc-plots, fig.width=10, fig.height=10}
+# Combine the HBC UMAP, cell-cycle, and membership panels for inline display.
+all_hbc_plot <- (umap_plot | phase_plot) / clust_membership
+all_hbc_plot
+```
+
+
+```{r save-hbc-object, cache=FALSE}
+# Save the final HBC subset for reuse when output writing is enabled.
+if (isTRUE(params$save_outputs)) {
+  saveRDS(hbc_subset, file.path(params$output_dir, "hbc_subset.rds"))
+}
+```
+
+## Session information
+
+This final block records the R version and package versions used for the run.
+
+```{r session-info, cache=FALSE}
+# Record the R and package versions used for this HBC-analysis run.
+sessionInfo()
+```
