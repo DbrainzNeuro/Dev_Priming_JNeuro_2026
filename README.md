@@ -6,8 +6,7 @@ Epithelial Niche by Intrinsic and Extrinsic Factors*.
 
 The numbered R Markdown notebooks, their shared helper functions, and the fixed
 plotting assets are all contained directly in this repository. Large Seurat,
-Slingshot, tradeSeq, and CellChat objects are deposited separately on Zenodo
-and are intentionally not stored in GitHub.
+Slingshot, tradeSeq, and CellChat objects are deposited separately on Zenodo.
 
 ## Where to start
 
@@ -16,11 +15,10 @@ and are intentionally not stored in GitHub.
 Notebooks 01 and 02 document the original raw-count merge, quality control,
 and integration workflow. They are included for methodological provenance, but
 they are not the recommended entry point for reproducing the public analysis.
-The Zenodo deposit provides `WholeOE.rds`, the completed output of notebook 02,
+Start with `WholeOE.rds` from Zenodo, which is the output of notebook 02,
 so a normal rerun begins with notebook 03.
 
-The notebooks do not all have to be run from beginning to end. Zenodo contains
-canonical checkpoints that let each major analysis begin from its tested input:
+Zenodo contains checkpoints that let each major analysis begin from its tested input:
 
 | Goal | Start with | Download from Zenodo |
 |---|---|---|
@@ -85,11 +83,8 @@ Dev_Priming_JNeuro_2026/
 `-- README.md
 ```
 
-The serialized data objects are ignored by Git and should remain in Zenodo,
-not be committed to this repository.
 
 ## Installation
-
 The validated environment uses R 4.4.2. From the repository root, restore the
 pinned package environment recorded in `renv.lock`:
 
@@ -101,7 +96,6 @@ renv::restore()
 Direct package dependencies are also summarized in [`DESCRIPTION`](DESCRIPTION).
 
 ## Running the notebooks
-
 Open the repository as the working project and render the desired notebook from
 the repository root. The default input directory is `data`, and generated
 Seurat, Slingshot, and tradeSeq results are written under `results`.
@@ -192,8 +186,7 @@ are versioned with the code under [`assets`](assets):
 - `04_slingshot_rgl_view_state.rds`
 - `04_slingshot_umap_curves_pcs1_to5_april13.rds`
 
-These are plotting assets, not substitute biological datasets. Project-defined
-helper functions are colocated in
+Helper functions are located in
 [`publication_helpers.R`](publication_helpers.R).
 
 ## Repository contents
