@@ -1,8 +1,7 @@
 # Developmental olfactory epithelium priming analysis
 
 This repository contains the public R analysis workflow for the manuscript
-*Progressive Fate Restriction of Ascl1-Expressing Stem Cells in the Olfactory
-Epithelial Niche by Intrinsic and Extrinsic Factors*.
+*Evolving stem cell fate capacities and transcriptional priming in the developing olfactory epithelium*.
 
 The numbered R Markdown notebooks, their shared helper functions, and the fixed
 plotting assets are all contained directly in this repository. Large Seurat,
