@@ -9,7 +9,7 @@ Slingshot, tradeSeq, and CellChat objects are deposited separately on Zenodo.
 
 ## Where to start
 
-**Most users should start with notebook 03, not notebook 01.**
+**Most users should start with notebook 03.**
 
 Notebooks 01 and 02 document the original raw-count merge, quality control,
 and integration workflow. They are included for methodological provenance, but
@@ -181,8 +181,7 @@ repository root as the project root so `here::here()` resolves paths correctly.
 ## Reproducing the historical tradeSeq fit
 
 Notebook 08 uses the completed `tradeseq_fit_combined.rds` deposited on
-Zenodo. Users do not need to repeat the fit to reproduce the plotted results.
-For provenance and optional full recomputation, [`tradeseq_fit`](tradeseq_fit)
+Zenodo. For provenance and optional full recomputation, [`tradeseq_fit`](tradeseq_fit)
 contains the code used to generate that object.
 
 - [`005_run_tradeseq_biowulf.R`](tradeseq_fit/005_run_tradeseq_biowulf.R)
@@ -251,12 +250,9 @@ Helper functions are located in
 
 ## Reproducibility notes
 
-The deposited checkpoints are the canonical starting objects used for the
-public reruns. UMAP coordinates, clustering, and other stochastic results can
+UMAP coordinates, clustering, and other stochastic results can
 vary with operating system, package builds, thread counts, and numerical
-libraries. The fixed notebook 07 projection assets are included specifically to
-preserve the published camera view and curve projection.
-
+libraries. 
 Exact Zenodo file sizes and the DOI field are recorded in
 [`DATA_MANIFEST.csv`](DATA_MANIFEST.csv). Replace `PENDING` with the final DOI
 after the Zenodo record is minted.
