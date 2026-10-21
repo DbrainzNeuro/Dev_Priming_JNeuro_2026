@@ -37,7 +37,7 @@ and does not require notebooks 03--08.
 
 ## Zenodo files
 
-Zenodo DOI: **PENDING**
+Zenodo DOI: **10.5281/zenodo.23424828**
 
 Download the following files from Zenodo. Large files are provided as
 multipart 7-Zip archives and must be extracted before use. Place the
