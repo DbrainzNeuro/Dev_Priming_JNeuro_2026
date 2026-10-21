@@ -39,10 +39,12 @@ and does not require notebooks 03--08.
 
 Zenodo DOI: **PENDING**
 
-Download the following files from Zenodo and place them in a directory named
-`data` at the repository root.
+Download the following files from Zenodo. Large files are provided as
+multipart 7-Zip archives and must be extracted before use. Place the
+original or extracted data files in a directory named `data` at the
+repository root.
 
-| File | Purpose |
+| File (after extraction, where applicable) | Purpose |
 |---|---|
 | `WholeOE.rds` | QC-filtered and integrated whole olfactory epithelium; starting point for notebook 03 |
 | `olfactory_lineage.rds` | Finished lineage object; skips the slow lineage extraction and marker work |
@@ -54,7 +56,31 @@ Download the following files from Zenodo and place them in a directory named
 | `ALL_TF.Rda` | TF reference required by notebook 08 |
 | `cellchat_input.RData` | Completed per-age CellChat objects used by notebook 09 |
 
-After downloading, the relevant part of the repository should look like this:
+### Extracting multipart archives
+
+Multipart archives have numbered filenames ending in `.7z.001`,
+`.7z.002`, and so on. **The number of parts varies by archive, and all
+parts of an archive are required to extract its data file.**
+
+For each archived data file:
+
+1. Download **all numbered parts belonging to that archive** into the
+   same folder. Keep their filenames unchanged.
+2. Install [7-Zip](https://www.7-zip.org/) or another extractor that
+   supports multipart 7z archives.
+3. Open the **`.7z.001`** part with 7-Zip and extract it into the
+   repository's `data` directory. The remaining parts are read
+   automatically; do not extract them separately.
+4. Confirm that the extracted file has the filename listed in the table
+   above and is directly inside `data`, rather than in an extra subfolder.
+
+Extraction restores the original data file without changing its contents.
+The numbered archive parts cannot be loaded directly into R. Files
+provided directly as `.rds`, `.Rda`, or `.RData` require no extraction;
+place them directly in `data`.
+
+After downloading and extracting, the relevant part of the repository
+should look like this:
 
 ```text
 Dev_Priming_JNeuro_2026/
